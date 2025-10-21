@@ -6,83 +6,107 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.accios.views.CameraView
 import com.example.accios.ui.theme.AcciosTheme
-import com.example.accios.viewmodels.CameraViewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.launch
+import org.opencv.android.OpenCVLoader
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Initialize OpenCV
+        if (!OpenCVLoader.initDebug()) {
+            android.util.Log.e("MainActivity", "OpenCV initialization failed!")
+        } else {
+            android.util.Log.d("MainActivity", "OpenCV initialization successful!")
+        }
         setContent {
             AcciosTheme {
-                Box(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
-                    CameraPreviewScreen(modifier = Modifier.fillMaxSize())
-
-                    TopNavbar()
-                }
+                MainScreenWithDrawer()
             }
         }
     }
 }
 
 @Composable
-fun TopNavbar() {
+fun MainScreenWithDrawer() {
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(240.dp)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Menu",
+                        style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    NavigationDrawerItem(
+                        label = { Text("Home") },
+                        selected = false,
+                        onClick = { scope.launch { drawerState.close() } }
+                    )
+                    NavigationDrawerItem(
+                        label = { Text("Settings") },
+                        selected = false,
+                        onClick = { scope.launch { drawerState.close() } }
+                    )
+                }
+            }
+        }
+    ) {
+        Box(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+            CameraPreviewScreen(modifier = Modifier.fillMaxSize())
+
+            TopNavbar(
+                onMenuClick = {
+                    scope.launch { drawerState.open() }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun TopNavbar(onMenuClick: () -> Unit = {}) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -101,12 +125,12 @@ fun TopNavbar() {
             Spacer(modifier = Modifier.width(48.dp))
 
             Text(
-                text = "Accios Prisma",
+                text = "Accio Edu",
                 style = MaterialTheme.typography.titleLarge,
                 color = Color.White
             )
 
-            IconButton(onClick = { /* Handle menu click */ }) {
+            IconButton(onClick = onMenuClick) {
                 Icon(
                     imageVector = Icons.Default.Menu,
                     contentDescription = "Menu",
@@ -141,7 +165,7 @@ fun AlertContainer() {
 @Composable
 fun CameraPreviewScreen(
     modifier: Modifier = Modifier,
-    viewModel: CameraViewModel = viewModel()
+    viewModel: CameraView = viewModel()
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -184,7 +208,6 @@ fun CameraPreviewScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Face shape overlay
                 Canvas(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -231,7 +254,6 @@ fun CameraPreviewScreen(
                     )
                 }
 
-                // Alert Container - 100px below face shape
                 if (faceShapeSize != IntSize.Zero) {
                     Box(
                         modifier = Modifier
@@ -241,15 +263,19 @@ fun CameraPreviewScreen(
                         AlertContainer()
                     }
                 }
+
+                // Draw detected faces
+                viewModel.detectedFaces.forEach { face ->
+                    Surface(
+                        modifier = Modifier
+                            .offset { IntOffset(face.left, face.top) }
+                            .size(face.width().dp, face.height().dp)
+                            .border(4.dp, Color.Green, RoundedCornerShape(16.dp))
+                            .zIndex(1f),
+                        color = androidx.compose.ui.graphics.Color.Transparent // No fill, just border
+                    ) {}
+                }
             }
         }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun CameraPreviewScreenPreview() {
-    AcciosTheme {
-        CameraPreviewScreen()
     }
 }

@@ -10,6 +10,8 @@ android {
         version = release(36)
     }
 
+    ndkVersion = "27.0.12077973"
+
     defaultConfig {
         applicationId = "com.example.accios"
         minSdk = 24
@@ -47,11 +49,13 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation("com.google.android.material:material:1.13.0")
-    implementation("androidx.camera:camera-core:1.4.0")  // Core CameraX
-    implementation("androidx.camera:camera-camera2:1.4.0")  // Camera2 interop
-    implementation("androidx.camera:camera-lifecycle:1.4.0")  // Lifecycle integration
-    implementation("androidx.camera:camera-view:1.4.0")  // PreviewView for rendering
+    implementation("androidx.camera:camera-core:1.4.0")
+    implementation("androidx.camera:camera-camera2:1.4.0")
+    implementation("androidx.camera:camera-lifecycle:1.4.0")
+    implementation("androidx.camera:camera-view:1.4.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
+    implementation("androidx.navigation:navigation-compose:2.7.5")
+    implementation(project(":opencv2"))
     implementation(libs.accompanist.permissions)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

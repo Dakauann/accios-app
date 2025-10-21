@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Accios"
 include(":app")
+include(":opencv2")
