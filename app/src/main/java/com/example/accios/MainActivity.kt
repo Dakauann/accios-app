@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -37,8 +38,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.zIndex
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.opencv.android.OpenCVLoader
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -142,6 +147,44 @@ fun TopNavbar(onMenuClick: () -> Unit = {}) {
 }
 
 @Composable
+fun InformationsContainer() {
+    var currentTime by remember { mutableStateOf("") }
+    var formattedDate by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            val currentDate = Date()
+            val monthFormat = SimpleDateFormat("MMMM", Locale("pt", "BR"))
+            val dayFormat = SimpleDateFormat("dd 'de'", Locale("pt", "BR"))
+            val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+            val monthName = monthFormat.format(currentDate).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("pt", "BR")) else it.toString() }
+            formattedDate = "${dayFormat.format(currentDate)} $monthName"
+            currentTime = timeFormat.format(currentDate)
+
+            delay(1000)
+        }
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .background(
+                color = Color.Black.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 24.dp, vertical = 12.dp)
+    ) {
+        Text(
+            text = currentTime,
+            color = Color.White,
+            style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp)
+        )
+        Text(text = formattedDate, color = Color.White, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+@Composable
 fun AlertContainer() {
     Box(
         modifier = Modifier
@@ -207,6 +250,16 @@ fun CameraPreviewScreen(
                     factory = { previewView },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                if (faceShapeSize != IntSize.Zero) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(y = with(density) { (faceShapeSize.height / 2 - 1300).toDp() })
+                    ) {
+                        InformationsContainer()
+                    }
+                }
 
                 Canvas(
                     modifier = Modifier
