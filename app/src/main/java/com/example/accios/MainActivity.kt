@@ -2,6 +2,7 @@ package com.example.accios
 
 import android.Manifest
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -41,14 +42,82 @@ import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.opencv.android.OpenCVLoader
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.concurrent.thread
+
+fun startServer() {
+    try {
+        val server = ServerSocket(7719).apply { reuseAddress = true }
+        Log.d("Server", "Server listening on port 7719 for route /api/v1/status...")
+
+        try {
+            while (true) {
+                val client: Socket = server.accept()
+                Log.d("Server", "New connection from ${client.inetAddress.hostAddress}")
+
+                thread {
+                    try {
+                        val input = client.getInputStream().bufferedReader()
+                        val request = input.readLine()
+                        Log.d("Server", "Received API call: $request")
+
+                        val targetRoute = "/api/v1/status"
+                        val response = when {
+                            request == null -> "No data received"
+                            request.trim() == targetRoute -> "Success: MAC Address ${getMacAddress()}"
+                            request.contains("GET /info") -> "Response: Server info"
+                            request.contains("GET /mac") -> "Response: MAC Address ${getMacAddress()}"
+                            else -> "Unknown request: $request"
+                        }
+
+                        val output = client.getOutputStream().bufferedWriter()
+                        output.write("$response\n")
+                        output.flush()
+
+                        client.close()
+                        Log.d("Server", "Client connection closed")
+                    } catch (e: Exception) {
+                        Log.e("Server", "Error handling client: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Server", "Server error: ${e.message}")
+        } finally {
+            server.close()
+            Log.d("Server", "Server closed")
+        }
+    } catch (e: Exception) {
+        Log.e("Server", "Socket error: ${e.message}")
+    }
+}
+
+private fun getMacAddress(): String {
+    try {
+        val interfaces = NetworkInterface.getNetworkInterfaces()
+        while (interfaces.hasMoreElements()) {
+            val ni = interfaces.nextElement()
+            val mac = ni.hardwareAddress
+            if (mac != null && ni.name.startsWith("wlan")) {
+                return mac.joinToString(":") { String.format("%02X", it) }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("Server", "Error getting MAC: ${e.message}")
+    }
+    return "Unknown"
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
         // Initialize OpenCV
         if (!OpenCVLoader.initDebug()) {
             android.util.Log.e("MainActivity", "OpenCV initialization failed!")
@@ -59,6 +128,10 @@ class MainActivity : ComponentActivity() {
             AcciosTheme {
                 MainScreenWithDrawer()
             }
+        }
+
+        thread {
+            startServer()
         }
     }
 }
