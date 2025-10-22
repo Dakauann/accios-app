@@ -8,7 +8,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -31,9 +31,9 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.IntOffset
@@ -242,8 +242,9 @@ fun InformationsContainer() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .shadow(8.dp, RoundedCornerShape(12.dp))
             .background(
-                color = Color.Black.copy(alpha = 0.4f),
+                color = Color.Black.copy(alpha = 0.55f),
                 shape = RoundedCornerShape(12.dp)
             )
             .padding(horizontal = 24.dp, vertical = 12.dp)
@@ -251,25 +252,28 @@ fun InformationsContainer() {
         Text(
             text = currentTime,
             color = Color.White,
-            style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp)
+            style = MaterialTheme.typography.displaySmall.copy(fontSize = 36.sp)
         )
         Text(text = formattedDate, color = Color.White, style = MaterialTheme.typography.titleMedium)
     }
 }
 
 @Composable
-fun AlertContainer() {
+fun AlertContainer(isFaceDetected: Boolean = false) {
+    val bgColor = if (isFaceDetected) Color(0xFF2E7D32).copy(alpha = 0.95f) else Color.Red.copy(alpha = 0.9f)
+    val text = if (isFaceDetected) "Rosto detectado" else "Posicione seu rosto a frente da camera"
     Box(
         modifier = Modifier
+            .shadow(6.dp, RoundedCornerShape(12.dp))
             .fillMaxWidth(0.8f)
             .background(
-                color = Color.Red.copy(alpha = 0.8f),
+                color = bgColor,
                 shape = RoundedCornerShape(12.dp)
             )
             .padding(16.dp)
     ) {
         Text(
-            text = "Posicione seu rosto a frente da camera",
+            text = text,
             color = Color.White,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.align(Alignment.Center)
@@ -290,6 +294,7 @@ fun CameraPreviewScreen(
     val previewView = remember { androidx.camera.view.PreviewView(context) }
     var faceShapeSize by remember { mutableStateOf(IntSize.Zero) }
     val density = LocalDensity.current
+    var alertHeightDp by remember { mutableStateOf(0.dp) }
 
     LaunchedEffect(permissionState.status.isGranted) {
         hasCameraPermission = permissionState.status.isGranted
@@ -324,16 +329,6 @@ fun CameraPreviewScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                if (faceShapeSize != IntSize.Zero) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .offset(y = with(density) { (faceShapeSize.height / 2 - 1300).toDp() })
-                    ) {
-                        InformationsContainer()
-                    }
-                }
-
                 Canvas(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -345,60 +340,74 @@ fun CameraPreviewScreen(
                 ) {
                     val width = size.width
                     val height = size.height
+                    val strokePx = 6f
+                    val hasFace = viewModel.detectedFaces.isNotEmpty()
 
-                    drawRoundRect(
-                        color = Color.Green,
-                        size = Size(width, height),
-                        cornerRadius = CornerRadius(
-                            x = 60f,
-                            y = 60f
-                        ),
-                        style = Stroke(
-                            width = 8f,
-                        )
+                    // fill change when face is present (slightly more visible)
+                    val fillColor = if (hasFace) Color(0xFF1976D2).copy(alpha = 0.08f) else Color.Green.copy(alpha = 0.06f)
+                    drawOval(
+                        color = fillColor,
+                        topLeft = androidx.compose.ui.geometry.Offset(0f, 0f),
+                        size = Size(width, height)
                     )
 
-                    val path = androidx.compose.ui.graphics.Path().apply {
-                        addRoundRect(
-                            RoundRect(
-                                left = 0f,
-                                top = 0f,
-                                right = width,
-                                bottom = height,
-                                topLeftCornerRadius = CornerRadius(width * 0.3f, width * 0.2f),
-                                topRightCornerRadius = CornerRadius(width * 0.3f, width * 0.2f),
-                                bottomLeftCornerRadius = CornerRadius(width * 0.35f, width * 0.4f),
-                                bottomRightCornerRadius = CornerRadius(width * 0.35f, width * 0.4f)
-                            )
-                        )
-                    }
+                    // stroke gradient changes when face detected
+                    val strokeBrush = if (hasFace) Brush.linearGradient(listOf(Color(0xFF64B5F6), Color(0xFF1976D2)))
+                    else Brush.linearGradient(listOf(Color(0xFF66BB6A), Color(0xFF2E7D32)))
 
-                    drawPath(
-                        path = path,
-                        color = Color.Green,
-                        style = Stroke(width = 8f)
+                    drawOval(
+                        brush = strokeBrush,
+                        topLeft = androidx.compose.ui.geometry.Offset(0f, 0f),
+                        size = Size(width, height),
+                        style = Stroke(width = strokePx)
                     )
                 }
 
+                // Render InformationsContainer and AlertContainer after the Canvas so they always appear on top
                 if (faceShapeSize != IntSize.Zero) {
+                    val faceHeightDp = with(density) { faceShapeSize.height.toDp() }
+                    val configuration = LocalConfiguration.current
+                    val screenHeightDp = configuration.screenHeightDp.dp
+
+                    // desired vertical offset for the alert below the face
+                    val desiredAlertOffset = faceHeightDp / 2 + 30.dp
+
+                    // clamp the alert offset so it stays visible above bottom system bars and above the bottom edge
+                    val maxAllowedOffset = screenHeightDp / 2 - alertHeightDp / 2 - 35.dp
+                    val alertOffset = if (desiredAlertOffset > maxAllowedOffset) maxAllowedOffset else desiredAlertOffset
+
                     Box(
                         modifier = Modifier
                             .align(Alignment.Center)
-                            .offset(y = with(density) { (faceShapeSize.height / 2 + 100).toDp() })
+                            .offset(y = -faceHeightDp / 2 - 56.dp)
+                            .zIndex(2f)
                     ) {
-                        AlertContainer()
+                        InformationsContainer()
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .offset(y = alertOffset)
+                            .onGloballyPositioned { coords ->
+                                alertHeightDp = with(density) { coords.size.height.toDp() }
+                            }
+                            .zIndex(2f)
+                    ) {
+                        // Passa estado de detecção para o container de alerta
+                        AlertContainer(isFaceDetected = viewModel.detectedFaces.isNotEmpty())
                     }
                 }
 
-                // Draw detected faces
+                // Draw detected faces (soft highlight)
                 viewModel.detectedFaces.forEach { face ->
                     Surface(
                         modifier = Modifier
                             .offset { IntOffset(face.left, face.top) }
                             .size(face.width().dp, face.height().dp)
-                            .border(4.dp, Color.Green, RoundedCornerShape(16.dp))
                             .zIndex(1f),
-                        color = androidx.compose.ui.graphics.Color.Transparent // No fill, just border
+                        color = Color.Green.copy(alpha = 0.06f),
+                        shape = RoundedCornerShape(12.dp)
                     ) {}
                 }
             }
