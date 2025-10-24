@@ -91,20 +91,31 @@ class CameraView : ViewModel() {
         val overlays = faceService!!.processFrame(bgr)
 
         detectedFaces.clear()
-        for (r in overlays) {
-            detectedFaces.add(r)
-            // desenha retângulo sobre o frame original (mat é RGBA)
-            Imgproc.rectangle(
-                mat,
-                Point(r.left.toDouble(), r.top.toDouble()),
-                Point(r.right.toDouble(), r.bottom.toDouble()),
-                Scalar(0.0, 255.0, 0.0),
-                3
-            )
+        if (overlays.isEmpty()) {
+            Log.d("CameraView", "Nenhuma face detectada.") // Log para ausência de faces
+            onFacesDetected(emptyList()) // Atualiza estado como vazio quando nenhuma face é detectada
+        } else {
+            Log.d("CameraView", "${overlays.size} face(s) detectada(s).") // Log para faces detectadas
+            for (result in overlays) {
+                val r = result.rect
+                detectedFaces.add(r)
+                // desenha retângulo sobre o frame original (mat é RGBA)
+                Imgproc.rectangle(
+                    mat,
+                    Point(r.left.toDouble(), r.top.toDouble()),
+                    Point(r.right.toDouble(), r.bottom.toDouble()),
+                    Scalar(0.0, 255.0, 0.0),
+                    3
+                )
+
+                // Exibe a porcentagem de confiança (exemplo: 85%)
+                val confidence = "Confiança: ${(result.confidence * 100).toInt()}%"
+                Log.d("CameraView", confidence)
+            }
+            onFacesDetected(detectedFaces)
         }
 
         Utils.matToBitmap(mat, bitmap)
-        onFacesDetected(detectedFaces)
 
         // liberar mats
         try { bgr.release() } catch (_: Exception) {}
@@ -126,4 +137,12 @@ class CameraView : ViewModel() {
         appContext = null
         faceService = null
     }
+}
+
+// Extensão para converter ImageProxy em Bitmap (usada em processImageProxy)
+private fun androidx.camera.core.ImageProxy.toBitmap(): Bitmap {
+    val buffer = planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 }
