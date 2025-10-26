@@ -2,24 +2,28 @@ package com.example.accios.views
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.graphics.Rect
+import android.graphics.YuvImage
+import android.os.SystemClock
+import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.compose.runtime.mutableStateListOf
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
-import android.util.Log
-import org.opencv.android.Utils
-import androidx.compose.runtime.mutableStateListOf
-import org.opencv.core.Mat
-import org.opencv.core.Point
-import org.opencv.core.Scalar
-import org.opencv.imgproc.Imgproc
 import com.example.accios.services.FaceRecognitionService
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraView : ViewModel() {
     private var imageCapture: ImageCapture? = null
@@ -28,15 +32,22 @@ class CameraView : ViewModel() {
     // Tornar observável para Compose
     var detectedFaces = mutableStateListOf<Rect>()
     private var faceService: FaceRecognitionService? = null
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var recognitionCallback: ((Bitmap) -> Unit)? = null
+    private val recognitionInFlight = AtomicBoolean(false)
+    private var lastRecognitionTimestamp = 0L
+    private val recognitionCooldownMillis = 3_000L
 
     fun bindCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: androidx.camera.view.PreviewView,
         context: Context,
-        onFacesDetected: (List<Rect>) -> Unit = {}
+        onFacesDetected: (List<Rect>) -> Unit = {},
+        onRecognitionCandidate: (Bitmap) -> Unit = {}
     ) {
         appContext = context.applicationContext
-        faceService = FaceRecognitionService(context)
+        faceService = FaceRecognitionService()
+        recognitionCallback = onRecognitionCandidate
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
@@ -50,7 +61,7 @@ class CameraView : ViewModel() {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also {
-                    it.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
+                    it.setAnalyzer(cameraExecutor) { imageProxy ->
                         processImageProxy(imageProxy, onFacesDetected)
                     }
                 }
@@ -75,53 +86,62 @@ class CameraView : ViewModel() {
     }
 
     private fun processImageProxy(imageProxy: ImageProxy, onFacesDetected: (List<Rect>) -> Unit) {
-        if (faceService == null) {
+        val service = faceService
+        if (service == null) {
             imageProxy.close()
             return
         }
 
         val bitmap = imageProxy.toBitmap()
-        val mat = Mat()
-        Utils.bitmapToMat(bitmap, mat)
-
-        // Convert RGBA->BGR for processing if needed
-        val bgr = Mat()
-        Imgproc.cvtColor(mat, bgr, Imgproc.COLOR_RGBA2BGR)
-
-        val overlays = faceService!!.processFrame(bgr)
+        val overlays = service.processFrame(bitmap)
 
         detectedFaces.clear()
         if (overlays.isEmpty()) {
-            Log.d("CameraView", "Nenhuma face detectada.") // Log para ausência de faces
-            onFacesDetected(emptyList()) // Atualiza estado como vazio quando nenhuma face é detectada
+            Log.d(TAG, "Nenhuma face detectada.")
+            onFacesDetected(emptyList())
         } else {
-            Log.d("CameraView", "${overlays.size} face(s) detectada(s).") // Log para faces detectadas
-            for (result in overlays) {
-                val r = result.rect
-                detectedFaces.add(r)
-                // desenha retângulo sobre o frame original (mat é RGBA)
-                Imgproc.rectangle(
-                    mat,
-                    Point(r.left.toDouble(), r.top.toDouble()),
-                    Point(r.right.toDouble(), r.bottom.toDouble()),
-                    Scalar(0.0, 255.0, 0.0),
-                    3
-                )
-
-                // Exibe a porcentagem de confiança (exemplo: 85%)
-                val confidence = "Confiança: ${(result.confidence * 100).toInt()}%"
-                Log.d("CameraView", confidence)
+            Log.d(TAG, "${overlays.size} face(s) detectada(s).")
+            overlays.forEach { result ->
+                detectedFaces.add(result.rect)
             }
             onFacesDetected(detectedFaces)
         }
 
-        Utils.matToBitmap(mat, bitmap)
-
-        // liberar mats
-        try { bgr.release() } catch (_: Exception) {}
-        try { mat.release() } catch (_: Exception) {}
+        maybeTriggerRecognition(bitmap, overlays.firstOrNull()?.rect)
 
         imageProxy.close()
+    }
+
+    private fun maybeTriggerRecognition(frameBitmap: Bitmap, rect: Rect?) {
+        val callback = recognitionCallback ?: return
+        if (rect == null) return
+        if (recognitionInFlight.get()) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRecognitionTimestamp < recognitionCooldownMillis) return
+
+        val bounded = Rect(
+            rect.left.coerceAtLeast(0),
+            rect.top.coerceAtLeast(0),
+            rect.right.coerceAtMost(frameBitmap.width),
+            rect.bottom.coerceAtMost(frameBitmap.height)
+        )
+
+        if (bounded.width() <= 0 || bounded.height() <= 0) return
+
+        try {
+            val faceBitmap = Bitmap.createBitmap(
+                frameBitmap,
+                bounded.left,
+                bounded.top,
+                bounded.width(),
+                bounded.height()
+            )
+            recognitionInFlight.set(true)
+            callback.invoke(faceBitmap)
+        } catch (ex: Exception) {
+            Log.w("CameraView", "Falha ao recortar face: ${ex.message}")
+        }
     }
 
     fun unbindCamera(context: Context) {
@@ -132,17 +152,51 @@ class CameraView : ViewModel() {
         }, ContextCompat.getMainExecutor(context))
     }
 
+    fun onRecognitionProcessed(success: Boolean) {
+        lastRecognitionTimestamp = SystemClock.elapsedRealtime()
+        recognitionInFlight.set(false)
+        if (success) {
+            faceService?.resetTracker()
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         appContext = null
+        faceService?.shutdown()
         faceService = null
+        cameraExecutor.shutdown()
     }
 }
 
-// Extensão para converter ImageProxy em Bitmap (usada em processImageProxy)
-private fun androidx.camera.core.ImageProxy.toBitmap(): Bitmap {
-    val buffer = planes[0].buffer
-    val bytes = ByteArray(buffer.remaining())
-    buffer.get(bytes)
-    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+// Extensão para converter ImageProxy em Bitmap já rotacionado para a orientação do display
+private fun ImageProxy.toBitmap(): Bitmap {
+    val yBuffer = planes[0].buffer
+    val uBuffer = planes[1].buffer
+    val vBuffer = planes[2].buffer
+
+    val ySize = yBuffer.remaining()
+    val uSize = uBuffer.remaining()
+    val vSize = vBuffer.remaining()
+
+    val nv21 = ByteArray(ySize + uSize + vSize)
+    yBuffer.get(nv21, 0, ySize)
+    vBuffer.get(nv21, ySize, vSize)
+    uBuffer.get(nv21, ySize + vSize, uSize)
+
+    val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+    val out = ByteArrayOutputStream()
+    yuvImage.compressToJpeg(Rect(0, 0, width, height), 90, out)
+    val jpegBytes = out.toByteArray()
+    var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+
+    val rotationDegrees = imageInfo.rotationDegrees.toFloat()
+    if (rotationDegrees != 0f) {
+        val matrix = Matrix().apply { postRotate(rotationDegrees) }
+        bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    return bitmap
 }
+
+private const val TAG = "CameraView"
