@@ -2,12 +2,10 @@ package com.example.accios.views
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.ImageFormat
 import android.graphics.Matrix
+import android.graphics.PointF
 import android.graphics.Rect
-import android.graphics.YuvImage
 import android.os.SystemClock
 import android.util.Log
 import android.graphics.Paint
@@ -23,7 +21,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import com.example.accios.services.FaceDetectionResult
 import com.example.accios.services.FaceRecognitionService
-import java.io.ByteArrayOutputStream
 import java.util.HashSet
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -247,32 +244,92 @@ class CameraView : ViewModel() {
 
 // Converte ImageProxy em Bitmap já rotacionado para a orientação do display
 private fun ImageProxy.toFrameBitmap(): Bitmap {
-    val yBuffer = planes[0].buffer
-    val uBuffer = planes[1].buffer
-    val vBuffer = planes[2].buffer
+    val width = width
+    val height = height
+    val yPlane = planes[0]
+    val uPlane = planes[1]
+    val vPlane = planes[2]
+
+    val yBuffer = yPlane.buffer.asReadOnlyBuffer()
+    val uBuffer = uPlane.buffer.asReadOnlyBuffer()
+    val vBuffer = vPlane.buffer.asReadOnlyBuffer()
 
     val ySize = yBuffer.remaining()
-    val uSize = uBuffer.remaining()
-    val vSize = vBuffer.remaining()
-
-    val nv21 = ByteArray(ySize + uSize + vSize)
+    val nv21 = ByteArray(width * height * 3 / 2)
     yBuffer.get(nv21, 0, ySize)
-    vBuffer.get(nv21, ySize, vSize)
-    uBuffer.get(nv21, ySize + vSize, uSize)
 
-    val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-    val out = ByteArrayOutputStream()
-    yuvImage.compressToJpeg(Rect(0, 0, width, height), 90, out)
-    val jpegBytes = out.toByteArray()
-    var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+    val uvPlaneSize = width * height / 2
+    val vuPlane = ByteArray(uvPlaneSize)
+    val vRowStride = vPlane.rowStride
+    val uRowStride = uPlane.rowStride
+    val vPixelStride = vPlane.pixelStride
+    val uPixelStride = uPlane.pixelStride
+
+    var vuIndex = 0
+    for (row in 0 until height / 2) {
+        val vRowOffset = row * vRowStride
+        val uRowOffset = row * uRowStride
+        for (col in 0 until width / 2) {
+            val vIdx = vRowOffset + col * vPixelStride
+            val uIdx = uRowOffset + col * uPixelStride
+            vuPlane[vuIndex++] = vBuffer[vIdx]
+            vuPlane[vuIndex++] = uBuffer[uIdx]
+        }
+    }
+
+    System.arraycopy(vuPlane, 0, nv21, ySize, vuPlane.size)
+
+    val argb = IntArray(width * height)
+    yuvNv21ToArgb(nv21, width, height, argb)
+
+    var bitmap = Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
 
     val rotationDegrees = imageInfo.rotationDegrees.toFloat()
     if (rotationDegrees != 0f) {
         val matrix = Matrix().apply { postRotate(rotationDegrees) }
-        bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        if (rotatedBitmap !== bitmap) {
+            bitmap.recycle()
+        }
+        bitmap = rotatedBitmap
     }
 
     return bitmap
+}
+
+// Converte NV21 para ARGB_8888 sem usar compressão.
+private fun yuvNv21ToArgb(nv21: ByteArray, width: Int, height: Int, out: IntArray) {
+    val frameSize = width * height
+    var yp = 0
+    for (j in 0 until height) {
+        var uvp = frameSize + (j shr 1) * width
+        var u = 0
+        var v = 0
+        for (i in 0 until width) {
+            var y = (0xFF and nv21[yp].toInt()) - 16
+            if (y < 0) y = 0
+            if ((i and 1) == 0) {
+                v = (0xFF and nv21[uvp++].toInt()) - 128
+                u = (0xFF and nv21[uvp++].toInt()) - 128
+            }
+
+            val y1192 = 1192 * y
+            var r = y1192 + 1634 * v
+            var g = y1192 - 833 * v - 400 * u
+            var b = y1192 + 2066 * u
+
+            if (r < 0) r = 0 else if (r > 262143) r = 262143
+            if (g < 0) g = 0 else if (g > 262143) g = 262143
+            if (b < 0) b = 0 else if (b > 262143) b = 262143
+
+            out[yp] = -0x1000000 or
+                (r shl 6 and 0x00FF0000) or
+                (g shr 2 and 0x0000FF00) or
+                (b shr 10 and 0x000000FF)
+
+            yp++
+        }
+    }
 }
 
 private fun Bitmap.recycleSafely() {
@@ -296,32 +353,147 @@ private fun expandRect(source: Rect, frameWidth: Int, frameHeight: Int): Rect {
 
 private fun alignFaceBitmap(region: Bitmap, detection: FaceDetectionResult, regionBounds: Rect): Bitmap? {
     val landmarks = detection.landmarks ?: return null
-    val leftEye = landmarks.leftEye ?: return null
-    val rightEye = landmarks.rightEye ?: return null
-    val nose = landmarks.nose ?: return null
 
     val offsetX = regionBounds.left.toFloat()
     val offsetY = regionBounds.top.toFloat()
-    val src = floatArrayOf(
-        leftEye.x - offsetX,
-        leftEye.y - offsetY,
-        rightEye.x - offsetX,
-        rightEye.y - offsetY,
-        nose.x - offsetX,
-        nose.y - offsetY
-    )
 
-    val matrix = Matrix()
-    val success = matrix.setPolyToPoly(src, 0, ARC_FACE_REFERENCE_POINTS, 0, 3)
-    if (!success) {
+    val sourcePoints = ArrayList<PointF>(5)
+    val targetPoints = ArrayList<PointF>(5)
+
+    fun addPair(source: PointF?, target: PointF) {
+        if (source != null) {
+            sourcePoints += PointF(source.x - offsetX, source.y - offsetY)
+            targetPoints += target
+        }
+    }
+
+    addPair(landmarks.leftEye, ARC_FACE_REFERENCE_POINTS[0])
+    addPair(landmarks.rightEye, ARC_FACE_REFERENCE_POINTS[1])
+    addPair(landmarks.nose, ARC_FACE_REFERENCE_POINTS[2])
+
+    val hasMouth = landmarks.mouthLeft != null && landmarks.mouthRight != null
+    if (hasMouth) {
+        addPair(landmarks.mouthLeft, ARC_FACE_REFERENCE_POINTS[3])
+        addPair(landmarks.mouthRight, ARC_FACE_REFERENCE_POINTS[4])
+    }
+
+    if (sourcePoints.size < 3) {
         return null
     }
+
+    val matrix = estimateSimilarityTransform(sourcePoints, targetPoints)
+        ?: return null
 
     val output = Bitmap.createBitmap(FACE_INPUT_SIZE, FACE_INPUT_SIZE, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(output)
     val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     canvas.drawBitmap(region, matrix, paint)
     return output
+}
+
+// Resolve uma transformação de similaridade (escala + rotação + translação) mínima em LS.
+private fun estimateSimilarityTransform(source: List<PointF>, target: List<PointF>): Matrix? {
+    val count = min(source.size, target.size)
+    if (count < 2) {
+        return null
+    }
+
+    val ata = Array(4) { DoubleArray(4) }
+    val atb = DoubleArray(4)
+
+    for (index in 0 until count) {
+        val sx = source[index].x.toDouble()
+        val sy = source[index].y.toDouble()
+        val tx = target[index].x.toDouble()
+        val ty = target[index].y.toDouble()
+
+        val row1 = doubleArrayOf(sx, -sy, 1.0, 0.0)
+        val row2 = doubleArrayOf(sy, sx, 0.0, 1.0)
+
+        accumulateNormalEquation(ata, row1)
+        accumulateNormalEquation(ata, row2)
+
+        for (i in 0 until 4) {
+            atb[i] += row1[i] * tx + row2[i] * ty
+        }
+    }
+
+    val params = solveLinearSystem(ata, atb) ?: return null
+    val a = params[0]
+    val b = params[1]
+    val transX = params[2]
+    val transY = params[3]
+
+    val matrix = Matrix()
+    val values = floatArrayOf(
+        a.toFloat(), (-b).toFloat(), transX.toFloat(),
+        b.toFloat(), a.toFloat(), transY.toFloat(),
+        0f, 0f, 1f
+    )
+    matrix.setValues(values)
+    return matrix
+}
+
+private fun accumulateNormalEquation(ata: Array<DoubleArray>, row: DoubleArray) {
+    for (i in 0 until 4) {
+        for (j in i until 4) {
+            val value = row[i] * row[j]
+            ata[i][j] += value
+            if (i != j) {
+                ata[j][i] += value
+            }
+        }
+    }
+}
+
+private fun solveLinearSystem(matrix: Array<DoubleArray>, vector: DoubleArray): DoubleArray? {
+    val size = vector.size
+    val augmented = Array(size) { DoubleArray(size + 1) }
+
+    for (row in 0 until size) {
+        for (col in 0 until size) {
+            augmented[row][col] = matrix[row][col]
+        }
+        augmented[row][size] = vector[row]
+    }
+
+    for (pivot in 0 until size) {
+        var maxRow = pivot
+        var maxVal = kotlin.math.abs(augmented[pivot][pivot])
+        for (row in pivot + 1 until size) {
+            val value = kotlin.math.abs(augmented[row][pivot])
+            if (value > maxVal) {
+                maxVal = value
+                maxRow = row
+            }
+        }
+
+        if (maxVal < LINEAR_SOLVER_EPS) {
+            return null
+        }
+
+        if (maxRow != pivot) {
+            val temp = augmented[pivot]
+            augmented[pivot] = augmented[maxRow]
+            augmented[maxRow] = temp
+        }
+
+        val pivotVal = augmented[pivot][pivot]
+        for (col in pivot until size + 1) {
+            augmented[pivot][col] /= pivotVal
+        }
+
+        for (row in 0 until size) {
+            if (row == pivot) continue
+            val factor = augmented[row][pivot]
+            if (factor == 0.0) continue
+            for (col in pivot until size + 1) {
+                augmented[row][col] -= factor * augmented[pivot][col]
+            }
+        }
+    }
+
+    return DoubleArray(size) { augmented[it][size] }
 }
 
 data class DetectedFace(
@@ -344,11 +516,15 @@ private const val MAX_FRONT_FRAMES_TRACKED = 30
 private const val TRACK_STALE_TIMEOUT_MILLIS = 1_200L
 private const val FACE_INPUT_SIZE = 112
 private const val CENTER_TOLERANCE_RATIO = 0.2f
-private val ARC_FACE_REFERENCE_POINTS = floatArrayOf(
-    38.2946f, 51.6963f,
-    73.5318f, 51.5014f,
-    56.0252f, 71.7366f
+private val ARC_FACE_REFERENCE_POINTS = arrayOf(
+    PointF(38.2946f, 51.6963f),
+    PointF(73.5318f, 51.5014f),
+    PointF(56.0252f, 71.7366f),
+    PointF(41.5493f, 92.3655f),
+    PointF(70.7299f, 92.2041f)
 )
+
+private const val LINEAR_SOLVER_EPS = 1e-8
 
 private const val TAG = "CameraView"
 
