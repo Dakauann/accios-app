@@ -36,7 +36,7 @@ class CameraView : ViewModel() {
     var detectedFaces = mutableStateListOf<DetectedFace>()
     private var faceService: FaceRecognitionService? = null
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private var recognitionCallback: ((Bitmap) -> Unit)? = null
+    private var recognitionCallback: ((RecognitionCandidate) -> Unit)? = null
     private val recognitionInFlight = AtomicBoolean(false)
     private var lastRecognitionTimestamp = 0L
     private val recognitionHoldMillis = 10_000L
@@ -48,7 +48,7 @@ class CameraView : ViewModel() {
         previewView: androidx.camera.view.PreviewView,
         context: Context,
         onFacesDetected: (List<FaceDetectionResult>) -> Unit = {},
-        onRecognitionCandidate: (Bitmap) -> Unit = {}
+        onRecognitionCandidate: (RecognitionCandidate) -> Unit = {}
     ) {
         appContext = context.applicationContext
         faceService = FaceRecognitionService()
@@ -102,6 +102,7 @@ class CameraView : ViewModel() {
         detectedFaces.clear()
         if (overlays.isEmpty()) {
             facesClearedSinceLastRecognition = true
+            clearTrackStates()
             onFacesDetected(emptyList())
         } else {
             detectedFaces.addAll(
@@ -165,22 +166,24 @@ class CameraView : ViewModel() {
             return
         }
 
-        val aligned = alignFaceBitmap(faceRegion, candidate, bounded) ?: run {
-            var scaled = Bitmap.createScaledBitmap(faceRegion, FACE_INPUT_SIZE, FACE_INPUT_SIZE, true)
-            if (scaled === faceRegion) {
-                scaled = faceRegion.copy(Bitmap.Config.ARGB_8888, false)
-                    ?: Bitmap.createBitmap(faceRegion)
-            }
-            scaled
+        val aligned = alignFaceBitmap(faceRegion, candidate, bounded)
+        if (aligned == null) {
+            faceRegion.recycleSafely()
+            return
         }
-
-        recognitionInFlight.set(true)
-        facesClearedSinceLastRecognition = false
-        callback.invoke(aligned)
 
         if (aligned !== faceRegion) {
             faceRegion.recycleSafely()
         }
+
+        val batch = trackState.accumulator.offer(aligned, now)
+        if (batch == null) {
+            return
+        }
+
+        recognitionInFlight.set(true)
+        facesClearedSinceLastRecognition = false
+        callback.invoke(RecognitionCandidate(trackingId, batch))
     }
 
     fun unbindCamera(context: Context) {
@@ -194,6 +197,7 @@ class CameraView : ViewModel() {
     fun onRecognitionProcessed(success: Boolean) {
         lastRecognitionTimestamp = SystemClock.elapsedRealtime()
         recognitionInFlight.set(false)
+        resetAccumulations()
         if (success) {
             faceService?.resetTracker()
         }
@@ -201,7 +205,7 @@ class CameraView : ViewModel() {
 
     private fun updateFaceTrackStates(detections: List<FaceDetectionResult>) {
         if (detections.isEmpty()) {
-            faceTrackStates.clear()
+            clearTrackStates()
             return
         }
         val now = SystemClock.elapsedRealtime()
@@ -220,6 +224,7 @@ class CameraView : ViewModel() {
             } else {
                 state.consecutiveFrontFrames = 0
                 state.firstFrontFacingMillis = 0L
+                state.clearFrames()
             }
         }
 
@@ -228,6 +233,7 @@ class CameraView : ViewModel() {
             val entry = iterator.next()
             val isStale = now - entry.value.lastSeenMillis > TRACK_STALE_TIMEOUT_MILLIS
             if (isStale || entry.value.consecutiveFrontFrames == 0 && entry.key !in activeIds) {
+                entry.value.clearFrames()
                 iterator.remove()
             }
         }
@@ -238,7 +244,17 @@ class CameraView : ViewModel() {
         appContext = null
         faceService?.shutdown()
         faceService = null
+        clearTrackStates()
         cameraExecutor.shutdown()
+    }
+
+    private fun clearTrackStates() {
+        faceTrackStates.values.forEach { it.clearFrames() }
+        faceTrackStates.clear()
+    }
+
+    private fun resetAccumulations() {
+        faceTrackStates.values.forEach { it.clearFrames() }
     }
 }
 
@@ -501,11 +517,54 @@ data class DetectedFace(
     val isFrontFacing: Boolean
 )
 
+data class RecognitionCandidate(
+    val trackId: Int,
+    val frames: List<Bitmap>
+)
+
 private class FaceTrackState {
     var consecutiveFrontFrames: Int = 0
     var lastSeenMillis: Long = 0L
     var lastBoundingRect: Rect? = null
     var firstFrontFacingMillis: Long = 0L
+    val accumulator = FrameAccumulator(FRAME_AGGREGATION_COUNT, FRAME_AGGREGATION_WINDOW_MILLIS)
+
+    fun clearFrames() {
+        accumulator.reset()
+    }
+}
+
+private class FrameAccumulator(
+    private val maxSamples: Int,
+    private val windowMillis: Long
+) {
+    private val frames = ArrayDeque<Bitmap>()
+    private var windowStartMillis = 0L
+
+    fun offer(frame: Bitmap, timestamp: Long): List<Bitmap>? {
+        if (frames.isEmpty()) {
+            windowStartMillis = timestamp
+        } else if (timestamp - windowStartMillis > windowMillis) {
+            reset()
+            windowStartMillis = timestamp
+        }
+
+        frames += frame
+        if (frames.size < maxSamples) {
+            return null
+        }
+
+        val batch = ArrayList<Bitmap>(frames)
+        frames.clear()
+        windowStartMillis = 0L
+        return batch
+    }
+
+    fun reset() {
+        frames.forEach { it.recycleSafely() }
+        frames.clear()
+        windowStartMillis = 0L
+    }
 }
 
 private const val FACE_PADDING_RATIO = 0.25f
@@ -516,6 +575,8 @@ private const val MAX_FRONT_FRAMES_TRACKED = 30
 private const val TRACK_STALE_TIMEOUT_MILLIS = 1_200L
 private const val FACE_INPUT_SIZE = 112
 private const val CENTER_TOLERANCE_RATIO = 0.2f
+private const val FRAME_AGGREGATION_COUNT = 4
+private const val FRAME_AGGREGATION_WINDOW_MILLIS = 1_000L
 private val ARC_FACE_REFERENCE_POINTS = arrayOf(
     PointF(38.2946f, 51.6963f),
     PointF(73.5318f, 51.5014f),

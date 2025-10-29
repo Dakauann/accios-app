@@ -517,8 +517,8 @@ private fun FaceRecognitionView(
                 previewView = previewView,
                 context = context,
                 onFacesDetected = { faces -> detectionActive = faces.any { it.isFrontFacing } },
-                onRecognitionCandidate = { bitmap ->
-                    mainViewModel.submitRecognitionCandidate(bitmap) { success ->
+                onRecognitionCandidate = { candidate ->
+                    mainViewModel.submitRecognitionCandidate(candidate) { success ->
                         viewModel.onRecognitionProcessed(success)
                     }
                 }

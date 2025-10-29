@@ -11,6 +11,7 @@ import com.example.accios.services.ApiService
 import com.example.accios.services.PairingService
 import com.example.accios.services.FaceEmbeddingModel
 import com.example.accios.services.RecognitionEngine
+import com.example.accios.views.RecognitionCandidate
 import com.example.accios.storage.RecognitionLogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -145,33 +146,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun submitRecognitionCandidate(bitmap: Bitmap, onFinished: (Boolean) -> Unit) {
-        val faceCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        bitmap.recycleSafely()
-
-        if (faceCopy == null) {
+    fun submitRecognitionCandidate(candidate: RecognitionCandidate, onFinished: (Boolean) -> Unit) {
+        if (candidate.frames.isEmpty()) {
             onRecognitionError("Falha ao processar imagem", onFinished)
             return
         }
 
         if (!encodingRepository.isReady()) {
-            faceCopy.recycleSafely()
+            candidate.frames.forEach { it.recycleSafely() }
             onRecognitionError("Base local indisponível", onFinished)
             return
         }
 
-    markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
+        markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
 
         viewModelScope.launch(Dispatchers.Default) {
             val result = try {
-                recognitionEngine.recognize(faceCopy)
+                recognitionEngine.recognize(
+                    RecognitionEngine.RecognitionBatch(candidate.frames, candidate.trackId)
+                )
             } catch (ex: Exception) {
                 Log.e(TAG, "Erro no reconhecimento: ${ex.message}", ex)
                 null
+            } finally {
+                candidate.frames.forEach { it.recycleSafely() }
             }
 
             withContext(Dispatchers.Main) {
-                faceCopy.recycleSafely()
                 if (result != null) {
                     registerRecognitionSuccess(result.personId, result.displayName, result.confidence.toDouble())
                     onFinished(true)

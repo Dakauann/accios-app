@@ -35,7 +35,8 @@ class EncodingRepository(context: Context) {
         val embeddings: List<FloatArray>,
         val ids: List<String>,
         val roster: Map<String, PersonInfo>,
-        val dimension: Int
+        val dimension: Int,
+        val generation: Long
     )
 
     data class PersonInfo(
@@ -47,14 +48,21 @@ class EncodingRepository(context: Context) {
     private val encodingsDir = File(appContext.filesDir, ENCODINGS_DIR_NAME)
     private val datasetFile = File(encodingsDir, DATASET_FILE_NAME)
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val datasetGeneration = java.util.concurrent.atomic.AtomicLong(0L)
 
     @Volatile
-    private var datasetRef: Dataset = Dataset(emptyList(), emptyList(), emptyMap(), 0)
+    private var datasetRef: Dataset = Dataset(emptyList(), emptyList(), emptyMap(), 0, 0L)
+
+    private data class ThresholdCache(val generation: Long, val thresholdL2: Float)
+
+    @Volatile
+    private var thresholdCache: ThresholdCache? = null
 
     suspend fun loadFromDisk(): DatasetMeta? = withContext(Dispatchers.IO) {
         val loaded = loadDatasetFromDisk(encodingsDir) ?: return@withContext null
-        datasetRef = loaded
-        DatasetMeta(loaded.ids.size, loaded.dimension, getLastSyncEpochSeconds())
+    thresholdCache = null
+    datasetRef = loaded
+    DatasetMeta(loaded.ids.size, loaded.dimension, getLastSyncEpochSeconds())
     }
 
     suspend fun applySyncDataset(payload: String, timestampSeconds: Long): SyncResult = withContext(Dispatchers.IO) {
@@ -116,7 +124,9 @@ class EncodingRepository(context: Context) {
         runCatching { datasetFile.writeText(persistable.toString()) }
             .onFailure { Log.e(TAG, "Falha ao persistir dataset local: ${it.message}") }
 
-        datasetRef = Dataset(embeddings, ids, roster, dimension)
+        val generation = datasetGeneration.incrementAndGet()
+        datasetRef = Dataset(embeddings, ids, roster, dimension, generation)
+        thresholdCache = null
         setLastSyncEpochSeconds(timestampSeconds)
         SyncResult(true, ids.size, dimension, timestampSeconds)
     }
@@ -156,6 +166,25 @@ class EncodingRepository(context: Context) {
         return MatchCandidate(personId, info?.displayName, bestDistance)
     }
 
+    fun estimateThresholdL2(targetFmr: Double = DEFAULT_TARGET_FMR, sampleLimit: Int = DEFAULT_THRESHOLD_SAMPLE_LIMIT): Float {
+        val current = datasetRef
+        val cached = thresholdCache
+        if (cached != null && cached.generation == current.generation) {
+            return cached.thresholdL2
+        }
+
+        if (current.embeddings.size < MIN_CALIBRATION_PEOPLE) {
+            return DEFAULT_MATCH_THRESHOLD_L2
+        }
+
+        val computed = computeCalibratedThreshold(current, targetFmr, sampleLimit)
+            ?: DEFAULT_MATCH_THRESHOLD_L2
+        val sanitized = computed.coerceIn(MIN_THRESHOLD_L2, MAX_THRESHOLD_L2)
+        thresholdCache = ThresholdCache(current.generation, sanitized)
+        Log.d(TAG, "Threshold recalibrated (L2) = $sanitized")
+        return sanitized
+    }
+
     private fun loadDatasetFromDisk(directory: File): Dataset? {
         val target = File(directory, DATASET_FILE_NAME)
         if (!target.exists()) return null
@@ -169,7 +198,9 @@ class EncodingRepository(context: Context) {
                 Log.e(TAG, "Dataset persistido inválido: embeddings=${embeddings.size}, ids=${ids.size}")
                 return null
             }
-            Dataset(embeddings, ids, roster, dimension)
+            val generation = datasetGeneration.incrementAndGet()
+            thresholdCache = null
+            Dataset(embeddings, ids, roster, dimension, generation)
         } catch (ex: Exception) {
             Log.e(TAG, "Falha ao carregar dataset local: ${ex.message}")
             null
@@ -207,6 +238,37 @@ class EncodingRepository(context: Context) {
         }
 
         return Triple(embeddings, ids, roster)
+    }
+
+    private fun computeCalibratedThreshold(dataset: Dataset, targetFmr: Double, sampleLimit: Int): Float? {
+        val embeddings = dataset.embeddings
+        val ids = dataset.ids
+        if (embeddings.size < 2) return null
+
+        val impostorDistances = ArrayList<Float>(sampleLimit)
+        val people = embeddings.indices
+        outer@ for (i in people) {
+            for (j in (i + 1) until embeddings.size) {
+                if (ids[i] == ids[j]) continue
+                val distance = l2Distance(embeddings[i], embeddings[j])
+                impostorDistances.add(distance)
+                if (impostorDistances.size >= sampleLimit) {
+                    break@outer
+                }
+            }
+        }
+
+        if (impostorDistances.size < MIN_CALIBRATION_PAIRS) {
+            return DEFAULT_MATCH_THRESHOLD_L2
+        }
+
+        impostorDistances.sort()
+        val sanitizedFmr = targetFmr.coerceIn(MIN_TARGET_FMR, MAX_TARGET_FMR)
+        val index = kotlin.math.max(0, kotlin.math.min(
+            impostorDistances.lastIndex,
+            kotlin.math.ceil(sanitizedFmr * impostorDistances.size).toInt()
+        ))
+        return impostorDistances[index]
     }
 
     private fun inferDimension(datasetArray: JSONArray): Int {
@@ -257,5 +319,14 @@ class EncodingRepository(context: Context) {
         private const val ENCODINGS_DIR_NAME = "encodings"
         private const val DATASET_FILE_NAME = "dataset.json"
         const val EMBEDDING_MODEL_FILENAME = "buffalo_s.onnx"
+        private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.15f
+        private const val MIN_THRESHOLD_L2 = 0.6f
+        private const val MAX_THRESHOLD_L2 = 1.35f
+        private const val DEFAULT_TARGET_FMR = 1e-4
+        private const val MIN_TARGET_FMR = 1e-5
+        private const val MAX_TARGET_FMR = 0.05
+        private const val DEFAULT_THRESHOLD_SAMPLE_LIMIT = 6000
+        private const val MIN_CALIBRATION_PEOPLE = 6
+        private const val MIN_CALIBRATION_PAIRS = 20
     }
 }
