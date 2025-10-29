@@ -13,6 +13,12 @@ import java.util.TimeZone
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+data class RecognitionLogEntry(
+    val personId: String,
+    val timestampIso: String,
+    val timestampMillis: Long
+)
+
 class RecognitionLogStore(context: Context) {
 
     private val logFile: File = File(context.filesDir, "logs_rec.json")
@@ -49,6 +55,25 @@ class RecognitionLogStore(context: Context) {
                     )
                 }
             }
+        }
+    }
+
+    fun getRecentLogs(limit: Int): List<RecognitionLogEntry> {
+        return lock.withLock {
+            readInternal()
+                .mapNotNull { obj ->
+                    val id = obj.optString("id")
+                    val timestamp = obj.optString("timestamp")
+                    if (id.isNullOrBlank() || timestamp.isNullOrBlank()) {
+                        null
+                    } else {
+                        val millis = runCatching { isoFormatter.parse(timestamp)?.time }
+                            .getOrNull() ?: 0L
+                        RecognitionLogEntry(id, timestamp, millis)
+                    }
+                }
+                .sortedByDescending { it.timestampMillis }
+                .take(limit)
         }
     }
 

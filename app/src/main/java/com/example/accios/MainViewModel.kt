@@ -12,6 +12,7 @@ import com.example.accios.services.PairingService
 import com.example.accios.services.FaceEmbeddingModel
 import com.example.accios.services.RecognitionEngine
 import com.example.accios.views.RecognitionCandidate
+import com.example.accios.storage.RecognitionLogEntry
 import com.example.accios.storage.RecognitionLogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.abs
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -80,11 +82,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleSettings() {
-        _uiState.update { it.copy(showSettings = !it.showSettings) }
+        val target = !_uiState.value.showSettings
+        _uiState.update { it.copy(showSettings = target) }
+        if (target) {
+            refreshRecentLogs()
+        }
     }
 
     fun setSettingsVisible(visible: Boolean) {
+        val shouldRefresh = visible && !_uiState.value.showSettings
         _uiState.update { it.copy(showSettings = visible) }
+        if (shouldRefresh) {
+            refreshRecentLogs()
+        }
+    }
+
+    fun refreshRecentLogs(limit: Int = 25) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val logs = recognitionLogStore.getRecentLogs(limit)
+            _uiState.update { state ->
+                state.copy(recentLogs = logs)
+            }
+        }
     }
 
     fun onQrDetected(rawValue: String) {
@@ -146,6 +165,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateAmbientLuminance(luminance: Float) {
+        _uiState.update { state ->
+            val nextLowLight = when {
+                luminance < LOW_LIGHT_ENTER_THRESHOLD -> true
+                luminance > LOW_LIGHT_EXIT_THRESHOLD -> false
+                else -> state.isLowLight
+            }
+
+            if (state.ambientLuminance != null &&
+                abs(state.ambientLuminance - luminance) < 2f &&
+                state.isLowLight == nextLowLight
+            ) {
+                state
+            } else {
+                state.copy(
+                    ambientLuminance = luminance,
+                    isLowLight = nextLowLight
+                )
+            }
+        }
+    }
+
     fun submitRecognitionCandidate(candidate: RecognitionCandidate, onFinished: (Boolean) -> Unit) {
         if (candidate.frames.isEmpty()) {
             onRecognitionError("Falha ao processar imagem", onFinished)
@@ -203,6 +244,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage = "Acesso autorizado",
                 lastRecognitionEpochSeconds = timestampSeconds
             )
+        }
+
+        if (_uiState.value.showSettings) {
+            refreshRecentLogs()
         }
 
         viewModelScope.launch {
@@ -296,6 +341,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             _uiState.update {
                                 it.copy(lastSyncEpochSeconds = now)
                             }
+                            if (_uiState.value.showSettings) {
+                                refreshRecentLogs()
+                            }
                         }
                     }
                 } catch (ex: Exception) {
@@ -375,6 +423,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "MainViewModel"
+        private const val LOW_LIGHT_ENTER_THRESHOLD = 70f
+        private const val LOW_LIGHT_EXIT_THRESHOLD = 95f
     }
 }
 
@@ -406,5 +456,8 @@ data class MainUiState(
     val baseEmbeddingDimension: Int? = null,
     val lastBaseSyncEpochSeconds: Long? = null,
     val lastSyncEpochSeconds: Long? = null,
-    val lastHeartbeatEpochSeconds: Long? = null
+    val lastHeartbeatEpochSeconds: Long? = null,
+    val ambientLuminance: Float? = null,
+    val isLowLight: Boolean = false,
+    val recentLogs: List<RecognitionLogEntry> = emptyList()
 )

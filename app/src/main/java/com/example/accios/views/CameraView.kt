@@ -37,22 +37,27 @@ class CameraView : ViewModel() {
     private var faceService: FaceRecognitionService? = null
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var recognitionCallback: ((RecognitionCandidate) -> Unit)? = null
+    private var luminanceCallback: ((Float) -> Unit)? = null
     private val recognitionInFlight = AtomicBoolean(false)
     private var lastRecognitionTimestamp = 0L
-    private val recognitionHoldMillis = 10_000L
+    private val recognitionHoldMillis = 5_000L
     private val faceTrackStates = mutableMapOf<Int, FaceTrackState>()
     private var facesClearedSinceLastRecognition = true
+    private var lastLuminanceNotified: Float? = null
 
     fun bindCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: androidx.camera.view.PreviewView,
         context: Context,
         onFacesDetected: (List<FaceDetectionResult>) -> Unit = {},
-        onRecognitionCandidate: (RecognitionCandidate) -> Unit = {}
+        onRecognitionCandidate: (RecognitionCandidate) -> Unit = {},
+        onAmbientLuminance: (Float) -> Unit = {}
     ) {
         appContext = context.applicationContext
         faceService = FaceRecognitionService()
         recognitionCallback = onRecognitionCandidate
+        luminanceCallback = onAmbientLuminance
+    lastLuminanceNotified = null
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
@@ -95,6 +100,15 @@ class CameraView : ViewModel() {
         if (service == null) {
             imageProxy.close()
             return
+        }
+
+        luminanceCallback?.let { callback ->
+            val luminance = estimateLuminance(imageProxy)
+            val last = lastLuminanceNotified
+            if (last == null || abs(last - luminance) > 1.5f) {
+                lastLuminanceNotified = luminance
+                callback.invoke(luminance)
+            }
         }
 
         val overlays = service.processFrame(imageProxy)
@@ -192,6 +206,8 @@ class CameraView : ViewModel() {
             val cameraProvider = cameraProviderFuture.get()
             cameraProvider.unbindAll()
         }, ContextCompat.getMainExecutor(context))
+        luminanceCallback = null
+        lastLuminanceNotified = null
     }
 
     fun onRecognitionProcessed(success: Boolean) {
@@ -255,6 +271,32 @@ class CameraView : ViewModel() {
 
     private fun resetAccumulations() {
         faceTrackStates.values.forEach { it.clearFrames() }
+    }
+
+    private fun estimateLuminance(imageProxy: ImageProxy): Float {
+        val yPlane = imageProxy.planes.firstOrNull() ?: return 0f
+        val buffer = yPlane.buffer.duplicate()
+        buffer.rewind()
+        val rowStride = yPlane.rowStride
+        val width = imageProxy.width
+        val height = imageProxy.height
+        val sampleStep = 20
+        var sum = 0L
+        var count = 0
+
+        for (row in 0 until height step sampleStep) {
+            val rowBase = row * rowStride
+            for (col in 0 until width step sampleStep) {
+                val index = rowBase + col
+                if (index >= buffer.limit()) continue
+                val value = buffer.get(index).toInt() and 0xFF
+                sum += value
+                count++
+            }
+        }
+
+        if (count == 0) return 0f
+        return sum.toFloat() / count.toFloat()
     }
 }
 

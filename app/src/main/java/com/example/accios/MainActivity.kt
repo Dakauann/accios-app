@@ -1,7 +1,9 @@
 package com.example.accios
 
 import android.Manifest
+import android.app.Activity
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,14 +18,19 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,10 +38,10 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Face
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -58,9 +65,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.accios.storage.RecognitionLogEntry
 import com.example.accios.ui.theme.AcciosTheme
 import com.example.accios.views.CameraView
 import com.example.accios.views.QrScannerView
@@ -92,10 +101,27 @@ class MainActivity : ComponentActivity() {
 fun SmartPresenceScreen(mainViewModel: MainViewModel) {
     val state by mainViewModel.uiState.collectAsState()
     val permissionState = rememberPermissionState(Manifest.permission.CAMERA)
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         if (!permissionState.status.isGranted) {
             permissionState.launchPermissionRequest()
+        }
+    }
+
+    LaunchedEffect(state.isLowLight) {
+        val activity = context as? Activity ?: return@LaunchedEffect
+        val params = activity.window.attributes
+        params.screenBrightness = if (state.isLowLight) 1f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        activity.window.attributes = params
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            val activity = context as? Activity ?: return@onDispose
+            val params = activity.window.attributes
+            params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            activity.window.attributes = params
         }
     }
 
@@ -141,13 +167,19 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
             SettingsButton(
                 onToggle = { mainViewModel.toggleSettings() }
             )
-
-            SettingsDropdown(
-                isVisible = state.showSettings,
-                onDismiss = { mainViewModel.setSettingsVisible(false) },
-                state = state
-            )
         }
+
+        LowLightGlowOverlay(
+            isActive = state.isLowLight && permissionState.status.isGranted,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        SettingsOverlay(
+            isVisible = state.showSettings,
+            state = state,
+            onDismiss = { mainViewModel.setSettingsVisible(false) },
+            onRefreshLogs = { mainViewModel.refreshRecentLogs() }
+        )
 
         if (!state.scannerEnabled && permissionState.status.isGranted) {
             Text(
@@ -289,61 +321,192 @@ private fun SettingsButton(modifier: Modifier = Modifier, onToggle: () -> Unit) 
 }
 
 @Composable
-private fun SettingsDropdown(isVisible: Boolean, onDismiss: () -> Unit, state: MainUiState) {
-    var expanded by remember { mutableStateOf(isVisible) }
+private fun SettingsOverlay(
+    isVisible: Boolean,
+    state: MainUiState,
+    onDismiss: () -> Unit,
+    onRefreshLogs: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.98f, animationSpec = tween(180)),
+        exit = fadeOut(animationSpec = tween(150)) + scaleOut(targetScale = 0.98f, animationSpec = tween(150)),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(onClick = onDismiss)
+            )
 
-    LaunchedEffect(isVisible) {
-        expanded = isVisible
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 36.dp),
+                shape = RoundedCornerShape(32.dp),
+                color = Color(0xFF1B1A29).copy(alpha = 0.95f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(28.dp),
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "Configurações",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = state.statusMessage ?: "",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White.copy(alpha = 0.7f)
+                            )
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Fechar",
+                                tint = Color.White
+                            )
+                        }
+                    }
+
+                    SettingsInfoSection(state)
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Últimos registros",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (state.recentLogs.isEmpty()) {
+                                item {
+                                    Text(
+                                        text = "Nenhum log disponível",
+                                        color = Color.White.copy(alpha = 0.7f),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            } else {
+                                items(state.recentLogs) { entry ->
+                                    LogEntryRow(entry)
+                                }
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = onRefreshLogs,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White.copy(alpha = 0.16f),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Atualizar registros")
+                    }
+                }
+            }
+        }
     }
+}
 
+@Composable
+private fun SettingsInfoSection(state: MainUiState) {
     val tabletStatus = if (state.isPaired) "Pareado" else "Não pareado"
+    val baseStatusLabel = if (state.baseLoaded) "Carregada (${state.baseRosterCount})" else "Não carregada"
     val deviceIdLabel = state.deviceId ?: "-"
     val serverLabel = state.serverUrl
     val lastSyncLabel = state.lastSyncEpochSeconds?.let { formatTimestamp(it) } ?: "-"
-    val baseStatusLabel = if (state.baseLoaded) "Carregada (${state.baseRosterCount})" else "Não carregada"
     val baseSyncLabel = state.lastBaseSyncEpochSeconds?.let { formatTimestamp(it) } ?: "-"
     val baseDimLabel = state.baseEmbeddingDimension?.toString() ?: "-"
     val lastHeartbeatLabel = state.lastHeartbeatEpochSeconds?.let { formatTimestamp(it) } ?: "-"
+    val luminanceLabel = state.ambientLuminance?.let { "${"%.0f".format(it)} / 255" } ?: "-"
 
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = {
-            expanded = false
-            onDismiss()
-        }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsInfoRow("Status do tablet", tabletStatus)
+        SettingsInfoRow("Device ID", deviceIdLabel)
+        SettingsInfoRow("Servidor", serverLabel)
+        SettingsInfoRow("Base local", baseStatusLabel)
+        SettingsInfoRow("Sync da base", baseSyncLabel)
+        SettingsInfoRow("Dimensão embedding", baseDimLabel)
+        SettingsInfoRow("Sync de logs", lastSyncLabel)
+        SettingsInfoRow("Último heartbeat", lastHeartbeatLabel)
+        SettingsInfoRow("Nível de iluminação", luminanceLabel)
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(label: String, value: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
-        DropdownMenuItem(
-            text = { Text("Status do tablet: $tabletStatus") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Device ID: $deviceIdLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Servidor: $serverLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Base local: $baseStatusLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Sync da base: $baseSyncLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Dimensão embedding: $baseDimLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Sync de logs: $lastSyncLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
-        DropdownMenuItem(
-            text = { Text("Último heartbeat: $lastHeartbeatLabel") },
-            onClick = { expanded = false; onDismiss() }
-        )
+        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.65f)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogEntryRow(entry: RecognitionLogEntry) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White.copy(alpha = 0.08f),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))
+    ) {
+        val personLabel = entry.personId.ifBlank { "-" }
+        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            Text(
+                text = "ID $personLabel",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = formatIsoTimestamp(entry.timestampIso),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.8f)
+            )
+        }
     }
 }
 
@@ -377,13 +540,56 @@ private fun GlassDateTime(modifier: Modifier = Modifier) {
             Text(
                 text = currentTime,
                 color = Color.White,
-                style = MaterialTheme.typography.headlineSmall,
+                fontSize = 48.sp,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = formattedDate,
                 color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.bodyMedium
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun LowLightGlowOverlay(isActive: Boolean, modifier: Modifier = Modifier) {
+    AnimatedVisibility(
+        visible = isActive,
+        enter = fadeIn(animationSpec = tween(260)),
+        exit = fadeOut(animationSpec = tween(220)),
+        modifier = modifier
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(140.dp)
+                    .align(Alignment.CenterStart)
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                Color(0xFFFFF8E1).copy(alpha = 0f),
+                                Color(0xFFFFECB3).copy(alpha = 0.7f)
+                            )
+                        )
+                    )
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(140.dp)
+                    .align(Alignment.CenterEnd)
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                Color(0xFFFFECB3).copy(alpha = 0.7f),
+                                Color(0xFFFFF8E1).copy(alpha = 0f)
+                            )
+                        )
+                    )
             )
         }
     }
@@ -521,9 +727,13 @@ private fun FaceRecognitionView(
                     mainViewModel.submitRecognitionCandidate(candidate) { success ->
                         viewModel.onRecognitionProcessed(success)
                     }
+                },
+                onAmbientLuminance = { luminance ->
+                    mainViewModel.updateAmbientLuminance(luminance)
                 }
             )
         } else {
+            mainViewModel.updateAmbientLuminance(LOW_LIGHT_RESET_VALUE)
             viewModel.unbindCamera(context)
         }
     }
@@ -556,6 +766,8 @@ private fun FaceRecognitionView(
     )
 }
 
+private const val LOW_LIGHT_RESET_VALUE = 120f
+
 private fun formatTimestamp(epochSeconds: Long): String {
     return try {
         val date = Date(epochSeconds * 1000)
@@ -563,4 +775,13 @@ private fun formatTimestamp(epochSeconds: Long): String {
     } catch (_: Exception) {
         "-"
     }
+}
+
+private fun formatIsoTimestamp(value: String): String {
+    return runCatching {
+        val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+        val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
+        val date = parser.parse(value)
+        if (date != null) formatter.format(date) else "-"
+    }.getOrElse { "-" }
 }

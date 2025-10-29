@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -117,8 +118,19 @@ class ApiService(
 
     @Throws(NetworkException::class)
     fun sendLogs(logs: List<Any>): ApiResult {
+        val logsArray = JSONArray().apply {
+            logs.forEach { entry ->
+                when (entry) {
+                    is JSONObject -> put(entry)
+                    is Map<*, *> -> put(JSONObject(entry))
+                    is Collection<*> -> put(JSONArray(entry))
+                    else -> put(JSONObject.wrap(entry))
+                }
+            }
+        }
+
         val payload = JSONObject().apply {
-            put("logs", logs)
+            put("logs", logsArray)
             put("timestamp", System.currentTimeMillis() / 1000L)
         }
         return postEncrypted("/api/equipment/logs", payload)
