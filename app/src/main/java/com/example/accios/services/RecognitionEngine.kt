@@ -26,7 +26,7 @@ class RecognitionEngine(
         val candidate = encodingRepository.findNearest(embedding) ?: return null
 
         val distanceL2 = candidate.distance
-        val cosineApprox = 1f - (distanceL2 * distanceL2) / 2f
+        val cosineApprox = (1f - (distanceL2 * distanceL2) / 2f)
         Log.d(
             "RecognitionEngine",
             "Candidate found: ${candidate.personId}, distL2=$distanceL2, cos≈$cosineApprox"

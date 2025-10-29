@@ -509,7 +509,7 @@ private class FaceTrackState {
 }
 
 private const val FACE_PADDING_RATIO = 0.25f
-private const val MIN_FACE_SIZE_RATIO = 0.18f
+private const val MIN_FACE_SIZE_RATIO = 0.25f
 private const val STABLE_FRAME_THRESHOLD = 8
 private const val STABLE_DURATION_MILLIS = 800L
 private const val MAX_FRONT_FRAMES_TRACKED = 30
