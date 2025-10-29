@@ -2,11 +2,9 @@ package com.example.accios
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.accios.RecognitionStatus
 import com.example.accios.device.DeviceInfoProvider
 import com.example.accios.data.EncodingRepository
 import com.example.accios.services.ApiService
@@ -162,7 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        markRecognitionStatus(RecognitionStatus.Detecting, "Processando reconhecimento...")
+    markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
 
         viewModelScope.launch(Dispatchers.Default) {
             val result = try {
@@ -195,39 +193,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 recognitionStatus = RecognitionStatus.Recognized,
                 recognitionMessage = when {
-                    !personName.isNullOrBlank() -> "Bem-vindo(a), $personName"
-                    else -> "Identificação confirmada"
+                    !personName.isNullOrBlank() -> "Bem-vindo(a)!"
+                    else -> "Acesso liberado"
                 },
                 recognizedPersonId = personId,
                 recognizedPersonName = personName,
                 recognitionConfidence = if (confidence.isNaN()) null else confidence,
-                statusMessage = "Reconhecimento realizado",
+                statusMessage = "Acesso autorizado",
                 lastRecognitionEpochSeconds = timestampSeconds
             )
         }
 
         viewModelScope.launch {
-            delay(5_000)
+            delay(10_000)
             _uiState.update {
                 it.copy(
                     recognitionStatus = RecognitionStatus.Idle,
-                    recognitionMessage = null
+                    recognitionMessage = null,
+                    recognizedPersonId = null,
+                    recognizedPersonName = null,
+                    recognitionConfidence = null
                 )
             }
         }
     }
 
     private fun onRecognitionFailed(message: String) {
+        val displayMessage = message.ifBlank { "Acesso negado" }
         _uiState.update {
             it.copy(
                 recognitionStatus = RecognitionStatus.Error,
-                recognitionMessage = message,
-                statusMessage = "Reconhecimento não confirmado"
+                recognitionMessage = displayMessage,
+                statusMessage = "Acesso negado",
+                recognizedPersonId = null,
+                recognizedPersonName = null,
+                recognitionConfidence = null
             )
         }
 
         viewModelScope.launch {
-            delay(4_000)
+            delay(10_000)
             _uiState.update {
                 it.copy(
                     recognitionStatus = RecognitionStatus.Idle,
@@ -322,28 +327,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         baseSyncMutex.withLock {
             try {
                 val response = service.syncEncodings()
+                Log.d(TAG, "Iniciando sincronização da base de encodings...")
+                Log.d(TAG, "Resposta da sincronização: ${response.statusCode}")
                 if (response.statusCode != 200) {
                     Log.w(TAG, "Sincronização de base falhou com status ${response.statusCode}")
                     return@withLock
                 }
-                val payload = response.rawBytes ?: response.decryptedBody?.let { decodeBase64(it) }
-                if (payload == null || payload.isEmpty()) {
+                val payload = response.decryptedBody ?: response.rawBody
+                if (payload.isNullOrBlank()) {
                     Log.w(TAG, "Resposta de sync sem payload utilizável")
                     return@withLock
                 }
                 val timestamp = System.currentTimeMillis() / 1000L
-                val syncResult = encodingRepository.applySyncPayload(payload, timestamp)
+                val syncResult = encodingRepository.applySyncDataset(payload, timestamp)
                 if (!syncResult.success) {
                     Log.w(TAG, "Falha ao aplicar base sincronizada")
                     return@withLock
-                }
-
-                if (syncResult.modelUpdated) {
-                    try {
-                        embeddingModel.reloadInterpreter()
-                    } catch (ex: Exception) {
-                        Log.e(TAG, "Erro ao recarregar modelo de embedding: ${ex.message}", ex)
-                    }
                 }
 
                 withContext(Dispatchers.Main) {
@@ -363,14 +362,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ex: Exception) {
                 Log.e(TAG, "Erro durante sync da base: ${ex.message}", ex)
             }
-        }
-    }
-
-    private fun decodeBase64(value: String): ByteArray? {
-        return try {
-            Base64.decode(value, Base64.DEFAULT)
-        } catch (_: IllegalArgumentException) {
-            null
         }
     }
 

@@ -215,7 +215,7 @@ class ApiService(
 
     companion object {
         private const val TAG = "ApiService"
-        private const val USER_AGENT = "SmartPresenceTotem/1.0.0"
+        private const val USER_AGENT = "SmartPresenceTotem/1.0.0 1.0.0"
     }
 
     private fun isJsonContent(contentType: String?): Boolean {

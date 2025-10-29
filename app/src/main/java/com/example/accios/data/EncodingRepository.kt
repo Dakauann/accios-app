@@ -2,26 +2,18 @@ package com.example.accios.data
 
 import android.content.Context
 import android.util.Log
-import com.example.accios.data.npz.NpyReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicReference
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 import kotlin.math.sqrt
 
 class EncodingRepository(context: Context) {
 
     data class SyncResult(
         val success: Boolean,
-        val modelUpdated: Boolean,
         val peopleCount: Int,
         val embeddingDimension: Int,
         val lastSyncEpochSeconds: Long?
@@ -54,89 +46,79 @@ class EncodingRepository(context: Context) {
     private val appContext = context.applicationContext
     private val encodingsDir = File(appContext.filesDir, ENCODINGS_DIR_NAME)
     private val datasetFile = File(encodingsDir, DATASET_FILE_NAME)
-    private val rosterFile = File(encodingsDir, ROSTER_FILE_NAME)
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     @Volatile
     private var datasetRef: Dataset = Dataset(emptyList(), emptyList(), emptyMap(), 0)
 
     suspend fun loadFromDisk(): DatasetMeta? = withContext(Dispatchers.IO) {
-        val loaded = loadDatasetFromDirectory(encodingsDir) ?: return@withContext null
+        val loaded = loadDatasetFromDisk(encodingsDir) ?: return@withContext null
         datasetRef = loaded
         DatasetMeta(loaded.ids.size, loaded.dimension, getLastSyncEpochSeconds())
     }
 
-    suspend fun applySyncPayload(zipBytes: ByteArray, timestampSeconds: Long): SyncResult = withContext(Dispatchers.IO) {
-        if (zipBytes.isEmpty()) {
-            return@withContext SyncResult(false, false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+    suspend fun applySyncDataset(payload: String, timestampSeconds: Long): SyncResult = withContext(Dispatchers.IO) {
+        if (payload.isBlank()) {
+            Log.w(TAG, "Sync payload vazio")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
         }
 
-        val tempDir = File(appContext.cacheDir, "encodings_sync_${System.currentTimeMillis()}")
-        if (!tempDir.exists() && !tempDir.mkdirs()) {
-            Log.e(TAG, "Unable to create temp dir ${tempDir.absolutePath}")
-            return@withContext SyncResult(false, false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
-        }
-
-        var modelUpdated = false
-        try {
-            ByteArrayInputStream(zipBytes).use { inputStream ->
-                ZipInputStream(inputStream).use { zipStream ->
-                    var entry: ZipEntry? = zipStream.nextEntry
-                    while (entry != null) {
-                        if (!entry.isDirectory) {
-                            val normalizedName = entry.name.substringAfterLast('/')
-                            val targetName = when {
-                                normalizedName.equals(DATASET_FILE_NAME, ignoreCase = true) -> DATASET_FILE_NAME
-                                normalizedName.equals(ROSTER_FILE_NAME, ignoreCase = true) -> ROSTER_FILE_NAME
-                                normalizedName.endsWith(".tflite", ignoreCase = true) -> {
-                                    modelUpdated = true
-                                    EMBEDDING_MODEL_FILENAME
-                                }
-                                else -> normalizedName
-                            }
-                            val targetFile = secureResolve(tempDir, targetName)
-                            targetFile.parentFile?.mkdirs()
-                            FileOutputStream(targetFile).use { out ->
-                                zipStream.copyTo(out)
-                            }
-                        }
-                        zipStream.closeEntry()
-                        entry = zipStream.nextEntry
-                    }
-                }
-            }
-
-            val newDataset = loadDatasetFromDirectory(tempDir)
-            if (newDataset == null) {
-                Log.e(TAG, "Failed to parse dataset from sync payload")
-                return@withContext SyncResult(false, modelUpdated, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
-            }
-
-            if (!encodingsDir.exists() && !encodingsDir.mkdirs()) {
-                Log.e(TAG, "Unable to create encodings dir ${encodingsDir.absolutePath}")
-                return@withContext SyncResult(false, modelUpdated, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
-            }
-
-            moveFile(File(tempDir, DATASET_FILE_NAME), datasetFile)
-            moveFile(File(tempDir, ROSTER_FILE_NAME), rosterFile)
-            if (modelUpdated) {
-                val modelSource = findFirstModelFile(tempDir)
-                if (modelSource != null) {
-                    moveFile(modelSource, File(encodingsDir, EMBEDDING_MODEL_FILENAME))
-                } else {
-                    modelUpdated = false
-                }
-            }
-
-            datasetRef = newDataset
-            setLastSyncEpochSeconds(timestampSeconds)
-            SyncResult(true, modelUpdated, newDataset.ids.size, newDataset.dimension, timestampSeconds)
+        val parsed = try {
+            JSONObject(payload)
         } catch (ex: Exception) {
-            Log.e(TAG, "Failed to apply sync payload: ${ex.message}", ex)
-            SyncResult(false, modelUpdated, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
-        } finally {
-            tempDir.deleteRecursively()
+            Log.e(TAG, "Falha ao interpretar JSON do payload: ${ex.message}")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
         }
+
+        if (parsed.has("error")) {
+            Log.w(TAG, "Servidor retornou erro no sync: ${parsed.optString("error")}")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+        }
+
+        val datasetArray = parsed.optJSONArray("dataset") ?: run {
+            Log.w(TAG, "Payload sem campo 'dataset'")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+        }
+
+        val dimension = parsed.optInt("embeddingDimension", inferDimension(datasetArray))
+        if (dimension <= 0) {
+            Log.w(TAG, "Dimensão de embedding inválida ($dimension)")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+        }
+
+        val (embeddings, ids, roster) = buildDatasetLists(datasetArray, dimension)
+        if (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size) {
+            Log.w(TAG, "Dataset inválido após parsing: embeddings=${embeddings.size}, ids=${ids.size}")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+        }
+
+        if (!encodingsDir.exists() && !encodingsDir.mkdirs()) {
+            Log.e(TAG, "Não foi possível criar diretório ${encodingsDir.absolutePath}")
+            return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
+        }
+
+        val persistable = JSONObject().apply {
+            put("embeddingDimension", dimension)
+            put("dataset", JSONArray().also { array ->
+                ids.forEachIndexed { index, personId ->
+                    val embedding = embeddings[index]
+                    val info = roster[personId]
+                    array.put(JSONObject().apply {
+                        put("id", personId)
+                        info?.displayName?.let { put("name", it) }
+                        put("embedding", JSONArray(embedding.map { it.toDouble() }))
+                    })
+                }
+            })
+            put("lastSyncEpochSeconds", timestampSeconds)
+        }
+
+        runCatching { datasetFile.writeText(persistable.toString()) }
+            .onFailure { Log.e(TAG, "Falha ao persistir dataset local: ${it.message}") }
+
+        datasetRef = Dataset(embeddings, ids, roster, dimension)
+        setLastSyncEpochSeconds(timestampSeconds)
+        SyncResult(true, ids.size, dimension, timestampSeconds)
     }
 
     fun isReady(): Boolean = datasetRef.embeddings.isNotEmpty()
@@ -174,100 +156,68 @@ class EncodingRepository(context: Context) {
         return MatchCandidate(personId, info?.displayName, bestDistance)
     }
 
-    private fun loadDatasetFromDirectory(directory: File): Dataset? {
-        if (!directory.exists()) return null
-        val datasetPath = File(directory, DATASET_FILE_NAME)
-        val rosterPath = File(directory, ROSTER_FILE_NAME)
-        if (!datasetPath.exists() || !rosterPath.exists()) {
-            return null
-        }
+    private fun loadDatasetFromDisk(directory: File): Dataset? {
+        val target = File(directory, DATASET_FILE_NAME)
+        if (!target.exists()) return null
         return try {
-            val embeddings = ArrayList<FloatArray>()
-            val ids = ArrayList<String>()
-            var dimension = 0
-            FileInputStream(datasetPath).use { fis ->
-                ZipInputStream(fis).use { zipStream ->
-                    var entry = zipStream.nextEntry
-                    while (entry != null) {
-                        val normalizedName = entry.name.substringAfterLast('/')
-                        when (normalizedName) {
-                            "embeddings.npy" -> {
-                                val matrix = NpyReader.readFloatMatrix(zipStream)
-                                matrix.rows.forEach { row ->
-                                    normalizeVector(row)
-                                    embeddings.add(row)
-                                }
-                                dimension = if (matrix.shape.size >= 2) matrix.shape.last() else matrix.rows.firstOrNull()?.size ?: 0
-                            }
-                            "ids.npy" -> {
-                                val stringArray = NpyReader.readStringArray(zipStream)
-                                ids.addAll(stringArray.values.map { it.trim() })
-                            }
-                        }
-                        zipStream.closeEntry()
-                        entry = zipStream.nextEntry
-                    }
-                }
-            }
-
+            val raw = target.readText()
+            val json = JSONObject(raw)
+            val datasetArray = json.optJSONArray("dataset") ?: JSONArray()
+            val dimension = json.optInt("embeddingDimension", inferDimension(datasetArray))
+            val (embeddings, ids, roster) = buildDatasetLists(datasetArray, dimension)
             if (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size) {
-                Log.e(TAG, "Inconsistent dataset: embeddings=${embeddings.size}, ids=${ids.size}")
+                Log.e(TAG, "Dataset persistido inválido: embeddings=${embeddings.size}, ids=${ids.size}")
                 return null
             }
-
-            val roster = parseRoster(rosterPath)
             Dataset(embeddings, ids, roster, dimension)
         } catch (ex: Exception) {
-            Log.e(TAG, "Failed to load dataset: ${ex.message}", ex)
+            Log.e(TAG, "Falha ao carregar dataset local: ${ex.message}")
             null
         }
     }
 
-    private fun parseRoster(file: File): Map<String, PersonInfo> {
-        return try {
-            val json = JSONObject(file.readText())
-            val students = json.optJSONArray("students") ?: JSONArray()
-            buildMap {
-                for (i in 0 until students.length()) {
-                    val item = students.optJSONObject(i) ?: continue
-                    val id = item.optString("id")
-                    if (id.isNullOrBlank()) continue
-                    val displayName = item.optString("display_name").takeIf { it.isNotBlank() }
-                    put(id, PersonInfo(displayName, item))
-                }
+    private fun buildDatasetLists(
+        datasetArray: JSONArray,
+        dimension: Int
+    ): Triple<List<FloatArray>, List<String>, Map<String, PersonInfo>> {
+        val embeddings = ArrayList<FloatArray>(datasetArray.length())
+        val ids = ArrayList<String>(datasetArray.length())
+        val roster = HashMap<String, PersonInfo>(datasetArray.length())
+
+        for (index in 0 until datasetArray.length()) {
+            val item = datasetArray.optJSONObject(index) ?: continue
+            val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
+            val name = item.optString("name").takeIf { it.isNotBlank() }
+            val embeddingArray = item.optJSONArray("embedding") ?: continue
+
+            if (embeddingArray.length() != dimension) {
+                Log.w(TAG, "Embedding de tamanho inesperado (${embeddingArray.length()}) para id=$id")
+                continue
             }
-        } catch (ex: Exception) {
-            Log.e(TAG, "Failed to parse roster: ${ex.message}")
-            emptyMap()
+
+            val embedding = FloatArray(dimension)
+            for (i in 0 until dimension) {
+                embedding[i] = embeddingArray.optDouble(i, 0.0).toFloat()
+            }
+            normalizeVector(embedding)
+
+            embeddings.add(embedding)
+            ids.add(id)
+            roster[id] = PersonInfo(name, item)
         }
+
+        return Triple(embeddings, ids, roster)
     }
 
-    private fun moveFile(source: File, target: File) {
-        if (!source.exists()) return
-        target.parentFile?.mkdirs()
-        source.copyTo(target, overwrite = true)
-    }
-
-    private fun findFirstModelFile(directory: File): File? {
-        directory.listFiles()?.forEach { file ->
-            if (file.isDirectory) {
-                val nested = findFirstModelFile(file)
-                if (nested != null) return nested
-            } else if (file.name.endsWith(".tflite", ignoreCase = true)) {
-                return file
+    private fun inferDimension(datasetArray: JSONArray): Int {
+        for (index in 0 until datasetArray.length()) {
+            val item = datasetArray.optJSONObject(index) ?: continue
+            val embedding = item.optJSONArray("embedding") ?: continue
+            if (embedding.length() > 0) {
+                return embedding.length()
             }
         }
-        return null
-    }
-
-    private fun secureResolve(baseDir: File, entryName: String): File {
-        val target = File(baseDir, entryName)
-        val canonical = target.canonicalPath
-        val baseCanonical = baseDir.canonicalPath
-        if (!canonical.startsWith(baseCanonical)) {
-            throw IOException("Zip entry path traversal blocked: $entryName")
-        }
-        return target
+        return 0
     }
 
     private fun normalizeVector(vector: FloatArray) {
@@ -305,8 +255,7 @@ class EncodingRepository(context: Context) {
         private const val PREFS_NAME = "encoding_repository"
         private const val PREF_LAST_SYNC = "last_sync_epoch"
         private const val ENCODINGS_DIR_NAME = "encodings"
-        private const val DATASET_FILE_NAME = "dataset.npz"
-        private const val ROSTER_FILE_NAME = "roster.json"
-        const val EMBEDDING_MODEL_FILENAME = "embedding_model.tflite"
+        private const val DATASET_FILE_NAME = "dataset.json"
+        const val EMBEDDING_MODEL_FILENAME = "buffalo_s.onnx"
     }
 }
