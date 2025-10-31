@@ -40,7 +40,7 @@ class CameraView : ViewModel() {
     private var luminanceCallback: ((Float) -> Unit)? = null
     private val recognitionInFlight = AtomicBoolean(false)
     private var lastRecognitionTimestamp = 0L
-    private val recognitionHoldMillis = 5_000L
+    private val recognitionHoldMillis = 3_000L
     private val faceTrackStates = mutableMapOf<Int, FaceTrackState>()
     private var facesClearedSinceLastRecognition = true
     private var lastLuminanceNotified: Float? = null
@@ -611,14 +611,14 @@ private class FrameAccumulator(
 
 private const val FACE_PADDING_RATIO = 0.25f
 private const val MIN_FACE_SIZE_RATIO = 0.25f
-private const val STABLE_FRAME_THRESHOLD = 8
-private const val STABLE_DURATION_MILLIS = 800L
+private const val STABLE_FRAME_THRESHOLD = 5
+private const val STABLE_DURATION_MILLIS = 500L
 private const val MAX_FRONT_FRAMES_TRACKED = 30
 private const val TRACK_STALE_TIMEOUT_MILLIS = 1_200L
 private const val FACE_INPUT_SIZE = 112
 private const val CENTER_TOLERANCE_RATIO = 0.2f
-private const val FRAME_AGGREGATION_COUNT = 4
-private const val FRAME_AGGREGATION_WINDOW_MILLIS = 1_000L
+private const val FRAME_AGGREGATION_COUNT = 3
+private const val FRAME_AGGREGATION_WINDOW_MILLIS = 650L
 private val ARC_FACE_REFERENCE_POINTS = arrayOf(
     PointF(38.2946f, 51.6963f),
     PointF(73.5318f, 51.5014f),

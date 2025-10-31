@@ -2,6 +2,8 @@ package com.example.accios
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -35,6 +37,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val embeddingModel = FaceEmbeddingModel(application)
     private val recognitionEngine = RecognitionEngine(embeddingModel, encodingRepository)
     private val baseSyncMutex = Mutex()
+    private var successPlayer: MediaPlayer? = null
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -42,6 +45,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var apiService: ApiService? = null
     private var heartbeatJob: Job? = null
     private var logSyncJob: Job? = null
+    private var recognitionResetJob: Job? = null
     private val heartbeatIntervalMillis = 60_000L
     private val logSyncIntervalMillis = 120_000L
 
@@ -225,6 +229,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun resetRecognitionState() {
+        recognitionResetJob?.cancel()
+        recognitionResetJob = null
+        applyRecognitionIdleState()
+    }
+
+    private fun playAccessGrantedSound() {
+        val app = getApplication<Application>()
+        val player = successPlayer ?: MediaPlayer().also { successPlayer = it }
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+        runCatching {
+            app.assets.openFd("audios/acessoautorizado.mp3").use { descriptor ->
+                player.reset()
+                player.setAudioAttributes(attributes)
+                player.setDataSource(descriptor.fileDescriptor, descriptor.startOffset, descriptor.length)
+                player.prepare()
+                player.start()
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Falha ao reproduzir áudio de acesso autorizado: ${error.message}")
+        }
+    }
+
     private fun registerRecognitionSuccess(personId: String?, personName: String?, confidence: Double) {
         val timestampSeconds = System.currentTimeMillis() / 1000L
         if (!personId.isNullOrBlank()) {
@@ -246,22 +277,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
+        playAccessGrantedSound()
+
         if (_uiState.value.showSettings) {
             refreshRecentLogs()
         }
 
-        viewModelScope.launch {
-            delay(10_000)
-            _uiState.update {
-                it.copy(
-                    recognitionStatus = RecognitionStatus.Idle,
-                    recognitionMessage = null,
-                    recognizedPersonId = null,
-                    recognizedPersonName = null,
-                    recognitionConfidence = null
-                )
-            }
-        }
+        scheduleRecognitionReset()
     }
 
     private fun onRecognitionFailed(message: String) {
@@ -277,20 +299,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        viewModelScope.launch {
-            delay(10_000)
-            _uiState.update {
-                it.copy(
-                    recognitionStatus = RecognitionStatus.Idle,
-                    recognitionMessage = null
-                )
-            }
-        }
+        scheduleRecognitionReset()
     }
 
     private fun onRecognitionError(message: String, onFinished: (Boolean) -> Unit) {
         onRecognitionFailed(message)
         onFinished(false)
+    }
+
+    private fun scheduleRecognitionReset() {
+        recognitionResetJob?.cancel()
+        recognitionResetJob = viewModelScope.launch {
+            delay(RECOGNITION_RESET_DELAY_MILLIS)
+            applyRecognitionIdleState()
+            recognitionResetJob = null
+        }
+    }
+
+    private fun applyRecognitionIdleState() {
+        _uiState.update { state ->
+            if (state.recognitionStatus == RecognitionStatus.Idle &&
+                state.recognitionMessage == null &&
+                state.recognizedPersonId == null &&
+                state.recognizedPersonName == null
+            ) {
+                state
+            } else {
+                state.copy(
+                    recognitionStatus = RecognitionStatus.Idle,
+                    recognitionMessage = null,
+                    recognizedPersonId = null,
+                    recognizedPersonName = null,
+                    recognitionConfidence = null
+                )
+            }
+        }
     }
 
     private fun Bitmap.recycleSafely() {
@@ -418,6 +461,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         heartbeatJob?.cancel()
         logSyncJob?.cancel()
+        recognitionResetJob?.cancel()
+        successPlayer?.release()
+        successPlayer = null
         embeddingModel.close()
     }
 
@@ -425,6 +471,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val TAG = "MainViewModel"
         private const val LOW_LIGHT_ENTER_THRESHOLD = 70f
         private const val LOW_LIGHT_EXIT_THRESHOLD = 95f
+        private const val RECOGNITION_RESET_DELAY_MILLIS = 3_000L
     }
 }
 

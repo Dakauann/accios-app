@@ -18,8 +18,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Face
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -134,76 +135,78 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
         )
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(liquidBackground)
-    ) {
-        if (!permissionState.status.isGranted) {
-            CameraPermissionInfo(permissionState.status.shouldShowRationale) {
-                permissionState.launchPermissionRequest()
-            }
-        } else {
-            if (state.scannerEnabled) {
-                PairingScannerSection(
-                    state = state,
-                    onQrDetected = mainViewModel::onQrDetected,
-                    onScannerError = { mainViewModel.markRecognitionStatus(RecognitionStatus.Error, it) }
-                )
-            } else {
-                FaceRecognitionView(
-                    state = state,
-                    onRecognitionStatus = mainViewModel::markRecognitionStatus,
-                    mainViewModel = mainViewModel
-                )
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = 24.dp, top = 28.dp)
-        ) {
-            SettingsButton(
-                onToggle = { mainViewModel.toggleSettings() }
-            )
-        }
-
-        LowLightGlowOverlay(
-            isActive = state.isLowLight && permissionState.status.isGranted,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        SettingsOverlay(
-            isVisible = state.showSettings,
+    if (state.showSettings) {
+        SettingsScreen(
             state = state,
             onDismiss = { mainViewModel.setSettingsVisible(false) },
-            onRefreshLogs = { mainViewModel.refreshRecentLogs() }
+            onRefreshLogs = { mainViewModel.refreshRecentLogs() },
+            background = liquidBackground
         )
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(liquidBackground)
+        ) {
+            if (!permissionState.status.isGranted) {
+                CameraPermissionInfo(permissionState.status.shouldShowRationale) {
+                    permissionState.launchPermissionRequest()
+                }
+            } else {
+                if (state.scannerEnabled) {
+                    PairingScannerSection(
+                        state = state,
+                        onQrDetected = mainViewModel::onQrDetected,
+                        onScannerError = { mainViewModel.markRecognitionStatus(RecognitionStatus.Error, it) }
+                    )
+                } else {
+                    FaceRecognitionView(
+                        state = state,
+                        onRecognitionStatus = mainViewModel::markRecognitionStatus,
+                        mainViewModel = mainViewModel
+                    )
+                }
+            }
 
-        if (!state.scannerEnabled && permissionState.status.isGranted) {
-            Text(
-                text = "Accio Edu",
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 24.dp, top = 32.dp),
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold
+                    .align(Alignment.TopEnd)
+                    .padding(end = 24.dp, top = 28.dp)
+            ) {
+                SettingsButton(
+                    onToggle = { mainViewModel.toggleSettings() }
+                )
+            }
+
+            LowLightGlowOverlay(
+                isActive = state.isLowLight && permissionState.status.isGranted,
+                modifier = Modifier.fillMaxSize()
             )
 
-            GlassDateTime(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 88.dp)
-            )
+            if (!state.scannerEnabled && permissionState.status.isGranted) {
+                Text(
+                    text = "Accio Edu",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 24.dp, top = 32.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold
+                )
 
-            RecognitionGlass(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 48.dp),
-                state = state
-            )
+                GlassDateTime(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 88.dp)
+                )
+
+                RecognitionGlass(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 48.dp),
+                    state = state
+                )
+            }
         }
     }
 }
@@ -321,113 +324,108 @@ private fun SettingsButton(modifier: Modifier = Modifier, onToggle: () -> Unit) 
 }
 
 @Composable
-private fun SettingsOverlay(
-    isVisible: Boolean,
+private fun SettingsScreen(
     state: MainUiState,
     onDismiss: () -> Unit,
-    onRefreshLogs: () -> Unit
+    onRefreshLogs: () -> Unit,
+    background: Brush
 ) {
-    AnimatedVisibility(
-        visible = isVisible,
-        enter = fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.98f, animationSpec = tween(180)),
-        exit = fadeOut(animationSpec = tween(150)) + scaleOut(targetScale = 0.98f, animationSpec = tween(150)),
-        modifier = Modifier.fillMaxSize()
+    val logsState = rememberLazyListState()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(background)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 32.dp, vertical = 36.dp),
+            shape = RoundedCornerShape(32.dp),
+            color = Color(0xFF1B1A29).copy(alpha = 0.95f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        ) {
+            Column(
                 modifier = Modifier
-                    .matchParentSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(onClick = onDismiss)
-            )
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth()
-                    .padding(horizontal = 32.dp, vertical = 36.dp),
-                shape = RoundedCornerShape(32.dp),
-                color = Color(0xFF1B1A29).copy(alpha = 0.95f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+                    .fillMaxSize()
+                    .padding(28.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(28.dp),
-                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text(
-                                text = "Configurações",
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = state.statusMessage ?: "",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.7f)
-                            )
-                        }
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Fechar",
-                                tint = Color.White
-                            )
-                        }
-                    }
-
-                    SettingsInfoSection(state)
-
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
+                    Column {
                         Text(
-                            text = "Últimos registros",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = "Configurações",
+                            style = MaterialTheme.typography.headlineSmall,
                             color = Color.White,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.SemiBold
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = state.statusMessage ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Fechar",
+                            tint = Color.White
+                        )
+                    }
+                }
 
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            if (state.recentLogs.isEmpty()) {
-                                item {
-                                    Text(
-                                        text = "Nenhum log disponível",
-                                        color = Color.White.copy(alpha = 0.7f),
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                            } else {
-                                items(state.recentLogs) { entry ->
-                                    LogEntryRow(entry)
-                                }
-                            }
+                Spacer(modifier = Modifier.height(24.dp))
+
+                SettingsInfoSection(state)
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                Text(
+                    text = "Últimos registros",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    state = logsState,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 12.dp)
+                ) {
+                    if (state.recentLogs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "Nenhum log disponível",
+                                color = Color.White.copy(alpha = 0.7f),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    } else {
+                        items(state.recentLogs) { entry ->
+                            LogEntryRow(entry)
                         }
                     }
+                }
 
-                    Button(
-                        onClick = onRefreshLogs,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.16f),
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Text("Atualizar registros")
-                    }
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Button(
+                    onClick = onRefreshLogs,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.16f),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Atualizar registros")
                 }
             }
         }
@@ -452,7 +450,6 @@ private fun SettingsInfoSection(state: MainUiState) {
         SettingsInfoRow("Servidor", serverLabel)
         SettingsInfoRow("Base local", baseStatusLabel)
         SettingsInfoRow("Sync da base", baseSyncLabel)
-        SettingsInfoRow("Dimensão embedding", baseDimLabel)
         SettingsInfoRow("Sync de logs", lastSyncLabel)
         SettingsInfoRow("Último heartbeat", lastHeartbeatLabel)
         SettingsInfoRow("Nível de iluminação", luminanceLabel)
@@ -519,9 +516,9 @@ private fun GlassDateTime(modifier: Modifier = Modifier) {
         while (true) {
             val now = Date()
             currentTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(now)
-            formattedDate = SimpleDateFormat("EEEE, dd 'de' MMMM", Locale("pt", "BR"))
+            formattedDate = SimpleDateFormat("EEEE, dd 'de' MMMM", PT_BR_LOCALE)
                 .format(now)
-                .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale("pt", "BR")) else it.toString() }
+                .replaceFirstChar { if (it.isLowerCase()) it.titlecase(PT_BR_LOCALE) else it.toString() }
             delay(1_000)
         }
     }
@@ -647,18 +644,23 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
         modifier = modifier
     ) {
         Surface(
-            shape = RoundedCornerShape(36.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp),
+            shape = RoundedCornerShape(40.dp),
             color = backgroundColor,
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f))
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 36.dp, vertical = 28.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 40.dp, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(76.dp)
+                        .size(96.dp)
                         .scale(iconScale)
                         .clip(CircleShape)
                         .background(accentColor.copy(alpha = 0.2f)),
@@ -668,7 +670,7 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                         imageVector = icon,
                         contentDescription = null,
                         tint = accentColor,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(48.dp)
                     )
                 }
 
@@ -676,7 +678,7 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                     Text(
                         text = primaryText,
                         color = Color.White,
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -745,9 +747,20 @@ private fun FaceRecognitionView(
     }
 
     LaunchedEffect(detectionActive, state.recognitionStatus, state.recognitionMessage) {
-        if (state.recognitionStatus == RecognitionStatus.Recognized || state.recognitionStatus == RecognitionStatus.Error) return@LaunchedEffect
         if (!detectionActive) {
-            onRecognitionStatus(RecognitionStatus.Idle, null)
+            delay(PERSON_EXIT_RESET_DELAY_MILLIS)
+            if (!detectionActive) {
+                when (state.recognitionStatus) {
+                    RecognitionStatus.Recognized, RecognitionStatus.Error -> {
+                        mainViewModel.resetRecognitionState()
+                    }
+                    else -> onRecognitionStatus(RecognitionStatus.Idle, null)
+                }
+            }
+            return@LaunchedEffect
+        }
+
+        if (state.recognitionStatus == RecognitionStatus.Recognized || state.recognitionStatus == RecognitionStatus.Error) {
             return@LaunchedEffect
         }
 
@@ -767,11 +780,13 @@ private fun FaceRecognitionView(
 }
 
 private const val LOW_LIGHT_RESET_VALUE = 120f
+private const val PERSON_EXIT_RESET_DELAY_MILLIS = 500L
+private val PT_BR_LOCALE = Locale.forLanguageTag("pt-BR")
 
 private fun formatTimestamp(epochSeconds: Long): String {
     return try {
         val date = Date(epochSeconds * 1000)
-        SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR")).format(date)
+    SimpleDateFormat("dd/MM/yyyy HH:mm", PT_BR_LOCALE).format(date)
     } catch (_: Exception) {
         "-"
     }
@@ -780,7 +795,7 @@ private fun formatTimestamp(epochSeconds: Long): String {
 private fun formatIsoTimestamp(value: String): String {
     return runCatching {
         val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
-        val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
+    val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm", PT_BR_LOCALE)
         val date = parser.parse(value)
         if (date != null) formatter.format(date) else "-"
     }.getOrElse { "-" }

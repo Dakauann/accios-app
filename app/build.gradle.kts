@@ -18,7 +18,8 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://192.168.31.202:3001\"")
+        // buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://192.168.31.202:3001\"")
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://backend.accioedu.com.br\"")
     }
 
     buildTypes {
