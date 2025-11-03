@@ -5,21 +5,19 @@ plugins {
 }
 
 android {
-    namespace = "com.example.accios"
+    namespace = "com.accioeducacional.totemapp"
     compileSdk = 36
 
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.example.accios"
+        applicationId = "com.accioeducacional.totemapp"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        // buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://192.168.31.202:3001\"")
-        buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://backend.accioedu.com.br\"")
     }
 
     buildTypes {
