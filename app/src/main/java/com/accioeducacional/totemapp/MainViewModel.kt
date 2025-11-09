@@ -30,7 +30,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.math.abs
 
 // const
-private const val DEFAULT_SERVER_URL = "https://backend.accioedu.com.br"
+private const val DEFAULT_SERVER_URL = "https://backend.accioedu.com"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
