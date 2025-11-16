@@ -57,6 +57,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import android.util.Log
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
@@ -74,6 +75,7 @@ import com.accioeducacional.totemapp.storage.RecognitionLogEntry
 import com.accioeducacional.totemapp.ui.theme.AcciosTheme
 import com.accioeducacional.totemapp.views.CameraView
 import com.accioeducacional.totemapp.views.QrScannerView
+import com.accioeducacional.totemapp.services.UpdatesService
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -87,6 +89,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Log.i(TAG, "Inicializando UpdatesService via onCreate")
+        UpdatesService.start(this)
 
         setContent {
             AcciosTheme {
@@ -94,6 +98,10 @@ class MainActivity : ComponentActivity() {
                 SmartPresenceScreen(mainViewModel)
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }
 

@@ -7,6 +7,7 @@ import android.media.MediaPlayer
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.accioeducacional.totemapp.config.ServerConfig
 import com.accioeducacional.totemapp.device.DeviceInfoProvider
 import com.accioeducacional.totemapp.data.EncodingRepository
 import com.accioeducacional.totemapp.services.ApiService
@@ -29,12 +30,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.abs
 
-// const
-private const val DEFAULT_SERVER_URL = "https://backend.accioedu.com"
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val pairingService = PairingService(application, DEFAULT_SERVER_URL)
+    private val pairingService = PairingService(application, ServerConfig.DEFAULT_SERVER_URL)
     private val recognitionLogStore = RecognitionLogStore(application)
     private val encodingRepository = EncodingRepository(application)
     private val embeddingModel = FaceEmbeddingModel(application)
@@ -490,7 +488,7 @@ data class MainUiState(
     val isPairingInProgress: Boolean = false,
     val scannerEnabled: Boolean = true,
     val showSettings: Boolean = false,
-    val serverUrl: String = DEFAULT_SERVER_URL,
+    val serverUrl: String = ServerConfig.DEFAULT_SERVER_URL,
     val deviceId: String? = null,
     val accessToken: String? = null,
     val statusMessage: String? = null,

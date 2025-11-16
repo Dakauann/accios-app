@@ -43,6 +43,7 @@ class PairingService(
                     expiresAt = payload.expiresAt
                 )
             } else {
+
                 PairingOutcome.Failure("Pairing request rejected")
             }
         } catch (ex: NetworkException) {
