@@ -3,6 +3,7 @@ package com.accioeducacional.totemapp.services
 import android.util.Log
 import com.accioeducacional.totemapp.crypto.ECCCryptoManager
 import com.accioeducacional.totemapp.exceptions.NetworkException
+import com.accioeducacional.totemapp.services.RequestHeaders.applyJsonHeaders
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -47,7 +48,7 @@ class ApiService(
         val request = Request.Builder()
             .url("$baseUrl/api/equipment/auth/pair")
             .post(payload.toString().toRequestBody(jsonMediaType))
-            .apply { applyHeaders(this) }
+            .applyJsonHeaders(token)
             .build()
 
         execute(request).use { response ->
@@ -86,7 +87,7 @@ class ApiService(
         val request = Request.Builder()
             .url("$baseUrl$endpoint")
             .post(body)
-            .apply { applyHeaders(this) }
+            .applyJsonHeaders(token)
             .build()
         return executeEncrypted(request)
     }
@@ -102,7 +103,7 @@ class ApiService(
         val request = Request.Builder()
             .url(httpUrl)
             .get()
-            .apply { applyHeaders(this) }
+            .applyJsonHeaders(token)
             .build()
         return executeEncrypted(request)
     }
@@ -198,14 +199,6 @@ class ApiService(
         }
     }
 
-    private fun applyHeaders(builder: Request.Builder) {
-        builder.header("Content-Type", "application/json")
-        builder.header("User-Agent", USER_AGENT)
-        token?.takeIf { it.isNotBlank() }?.let {
-            builder.header("Authorization", "Bearer $it")
-        }
-    }
-
     data class ApiResult(
         val statusCode: Int,
         val rawBytes: ByteArray?,
@@ -227,7 +220,6 @@ class ApiService(
 
     companion object {
         private const val TAG = "ApiService"
-        private const val USER_AGENT = "SmartPresenceTotem/1.0.0 1.0.0"
     }
 
     private fun isJsonContent(contentType: String?): Boolean {

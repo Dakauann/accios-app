@@ -20,6 +20,8 @@ import androidx.core.content.ContextCompat
 import com.accioeducacional.totemapp.BuildConfig
 import com.accioeducacional.totemapp.MainActivity
 import com.accioeducacional.totemapp.config.ServerConfig
+import com.accioeducacional.totemapp.services.RequestHeaders.applyApkDownloadHeaders
+import com.accioeducacional.totemapp.services.RequestHeaders.applyJsonHeaders
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -165,7 +167,7 @@ class UpdatesService : Service() {
 		val request = Request.Builder()
 			.get()
 			.url(url)
-			.header("Accept", "application/json")
+			.applyJsonHeaders()
 			.build()
 
 		return@withContext try {
@@ -201,13 +203,14 @@ class UpdatesService : Service() {
 
 	private suspend fun downloadApk(baseUrl: String, appUrl: String): File? = withContext(Dispatchers.IO) {
 		val resolvedUrl = resolveDownloadUrl(baseUrl, appUrl)
-		val requestBuilder = Request.Builder()
+		val request = Request.Builder()
 			.url(resolvedUrl)
 			.get()
-			.header("Accept", "application/vnd.android.package-archive")
+			.applyApkDownloadHeaders()
+			.build()
 
 		return@withContext try {
-			httpClient.newCall(requestBuilder.build()).execute().use { response ->
+			httpClient.newCall(request).execute().use { response ->
 				if (!response.isSuccessful) {
 					Log.w(TAG, "Falha ao baixar APK: HTTP ${response.code}")
 					return@use null
