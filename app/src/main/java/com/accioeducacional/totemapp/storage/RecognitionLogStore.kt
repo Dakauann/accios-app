@@ -16,7 +16,8 @@ import kotlin.concurrent.withLock
 data class RecognitionLogEntry(
     val personId: String,
     val timestampIso: String,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val entityType: String? = null
 )
 
 class RecognitionLogStore(context: Context) {
@@ -27,7 +28,7 @@ class RecognitionLogStore(context: Context) {
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
-    fun append(personId: String, timestampSeconds: Long) {
+    fun append(personId: String, timestampSeconds: Long, entityType: String? = null) {
         lock.withLock {
             val logs = readInternal().toMutableList()
             val timestampIso = isoFormatter.format(Date(timestampSeconds * 1000L))
@@ -35,6 +36,9 @@ class RecognitionLogStore(context: Context) {
                 JSONObject().apply {
                     put("id", personId)
                     put("timestamp", timestampIso)
+                    if (!entityType.isNullOrBlank()) {
+                        put("entityType", entityType)
+                    }
                 }
             )
             writeInternal(logs)
@@ -46,13 +50,18 @@ class RecognitionLogStore(context: Context) {
             readInternal().mapNotNull { obj ->
                 val id = obj.optString("id")
                 val timestamp = obj.optString("timestamp")
+                val entityType = obj.optString("entityType")
                 if (id.isNullOrBlank() || timestamp.isNullOrBlank()) {
                     null
                 } else {
-                    mapOf(
+                    val result = mutableMapOf<String, Any>(
                         "id" to id,
                         "timestamp" to timestamp
                     )
+                    if (!entityType.isNullOrBlank()) {
+                        result["entityType"] = entityType
+                    }
+                    result
                 }
             }
         }
@@ -64,12 +73,13 @@ class RecognitionLogStore(context: Context) {
                 .mapNotNull { obj ->
                     val id = obj.optString("id")
                     val timestamp = obj.optString("timestamp")
+                    val entityType = obj.optString("entityType").takeIf { it.isNotBlank() }
                     if (id.isNullOrBlank() || timestamp.isNullOrBlank()) {
                         null
                     } else {
                         val millis = runCatching { isoFormatter.parse(timestamp)?.time }
                             .getOrNull() ?: 0L
-                        RecognitionLogEntry(id, timestamp, millis)
+                        RecognitionLogEntry(id, timestamp, millis, entityType)
                     }
                 }
                 .sortedByDescending { it.timestampMillis }

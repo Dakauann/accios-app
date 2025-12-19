@@ -28,6 +28,7 @@ class EncodingRepository(context: Context) {
     data class MatchCandidate(
         val personId: String,
         val displayName: String?,
+        val entityType: String?,
         val distance: Float
     )
 
@@ -41,6 +42,7 @@ class EncodingRepository(context: Context) {
 
     data class PersonInfo(
         val displayName: String?,
+        val entityType: String?,
         val extra: JSONObject?
     )
 
@@ -114,6 +116,7 @@ class EncodingRepository(context: Context) {
                     array.put(JSONObject().apply {
                         put("id", personId)
                         info?.displayName?.let { put("name", it) }
+                        info?.entityType?.let { put("entityType", it) }
                         put("embedding", JSONArray(embedding.map { it.toDouble() }))
                     })
                 }
@@ -163,7 +166,7 @@ class EncodingRepository(context: Context) {
         if (bestIndex < 0) return null
         val personId = current.ids[bestIndex]
         val info = current.roster[personId]
-        return MatchCandidate(personId, info?.displayName, bestDistance)
+        return MatchCandidate(personId, info?.displayName, info?.entityType, bestDistance)
     }
 
     fun estimateThresholdL2(targetFmr: Double = DEFAULT_TARGET_FMR, sampleLimit: Int = DEFAULT_THRESHOLD_SAMPLE_LIMIT): Float {
@@ -219,6 +222,7 @@ class EncodingRepository(context: Context) {
             val item = datasetArray.optJSONObject(index) ?: continue
             val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
             val name = item.optString("name").takeIf { it.isNotBlank() }
+            val entityType = item.optString("entityType").takeIf { it.isNotBlank() }
             val embeddingArray = item.optJSONArray("embedding") ?: continue
 
             if (embeddingArray.length() != dimension) {
@@ -234,7 +238,7 @@ class EncodingRepository(context: Context) {
 
             embeddings.add(embedding)
             ids.add(id)
-            roster[id] = PersonInfo(name, item)
+            roster[id] = PersonInfo(name, entityType, item)
         }
 
         return Triple(embeddings, ids, roster)

@@ -220,7 +220,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.Main) {
                 if (result != null) {
-                    registerRecognitionSuccess(result.personId, result.displayName, result.confidence.toDouble())
+                    registerRecognitionSuccess(result.personId, result.displayName, result.entityType, result.confidence.toDouble())
                     onFinished(true)
                 } else {
                     onRecognitionFailed("Não reconhecido")
@@ -257,10 +257,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun registerRecognitionSuccess(personId: String?, personName: String?, confidence: Double) {
+    private fun registerRecognitionSuccess(personId: String?, personName: String?, entityType: String?, confidence: Double) {
         val timestampSeconds = System.currentTimeMillis() / 1000L
         if (!personId.isNullOrBlank()) {
-            recognitionLogStore.append(personId, timestampSeconds)
+            recognitionLogStore.append(personId, timestampSeconds, entityType)
         }
 
         _uiState.update {

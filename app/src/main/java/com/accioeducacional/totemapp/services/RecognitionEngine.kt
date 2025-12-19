@@ -13,6 +13,7 @@ class RecognitionEngine(
     data class RecognitionResult(
         val personId: String,
         val displayName: String?,
+        val entityType: String?,
         val distance: Float,
         val confidence: Float
     )
@@ -49,6 +50,7 @@ class RecognitionEngine(
         return RecognitionResult(
             personId = candidate.personId,
             displayName = candidate.displayName,
+            entityType = candidate.entityType,
             distance = distanceL2,
             confidence = confidence
         )
