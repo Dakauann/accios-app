@@ -193,7 +193,7 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
 
             if (!state.scannerEnabled && permissionState.status.isGranted) {
                 Text(
-                    text = "Accio Edu",
+                    text = "GDREdu",
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(start = 24.dp, top = 32.dp),
