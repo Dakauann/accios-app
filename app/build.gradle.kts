@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.accioeducacional.totemapp"
+    namespace = "com.gdreducacional.totemapp"
     compileSdk = 36
 
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.accioeducacional.totemapp"
+        applicationId = "com.gdreducacional.totemapp"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

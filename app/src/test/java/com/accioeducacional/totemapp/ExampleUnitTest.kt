@@ -1,4 +1,4 @@
-package com.accioeducacional.totemapp
+package com.gdreducacional.totemapp
 
 import org.junit.Test
 
