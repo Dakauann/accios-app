@@ -19,6 +19,11 @@ class PairingService(
 
     fun isPaired(): Boolean = cryptoManager.isPaired()
 
+    fun unpair() {
+        cryptoManager.clearPairing()
+        prefs.edit().remove(KEY_SERVER_URL).apply()
+    }
+
     fun getCryptoManager(): ECCCryptoManager = cryptoManager
 
     fun getLastServerUrl(): String = prefs.getString(KEY_SERVER_URL, defaultServerUrl) ?: defaultServerUrl

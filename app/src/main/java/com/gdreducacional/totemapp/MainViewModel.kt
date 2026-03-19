@@ -4,6 +4,10 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +17,7 @@ import com.gdreducacional.totemapp.data.EncodingRepository
 import com.gdreducacional.totemapp.services.ApiService
 import com.gdreducacional.totemapp.services.PairingService
 import com.gdreducacional.totemapp.services.FaceEmbeddingModel
+import com.gdreducacional.totemapp.services.ModelProvider
 import com.gdreducacional.totemapp.services.RecognitionEngine
 import com.gdreducacional.totemapp.views.RecognitionCandidate
 import com.gdreducacional.totemapp.storage.RecognitionLogEntry
@@ -37,8 +42,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val encodingRepository = EncodingRepository(application)
     private val embeddingModel = FaceEmbeddingModel(application)
     private val recognitionEngine = RecognitionEngine(embeddingModel, encodingRepository)
+    private val modelProvider = ModelProvider(application)
     private val baseSyncMutex = Mutex()
     private var successPlayer: MediaPlayer? = null
+    private val connectivityManager = application.getSystemService(ConnectivityManager::class.java)
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _uiState.update { it.copy(isNetworkAvailable = true) }
+        }
+        override fun onLost(network: Network) {
+            _uiState.update { it.copy(isNetworkAvailable = false) }
+        }
+    }
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -47,10 +63,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var heartbeatJob: Job? = null
     private var logSyncJob: Job? = null
     private var recognitionResetJob: Job? = null
+    private var modelInitJob: Job? = null
     private val heartbeatIntervalMillis = 60_000L
-    private val logSyncIntervalMillis = 120_000L
+    private val logSyncIntervalMillis = 20_000L
 
     init {
+        val networkRequest = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
+        val activeNetwork = connectivityManager.activeNetwork
+        val activeCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+        val initialNetworkAvailable = activeCapabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+
         val crypto = pairingService.getCryptoManager()
         val paired = pairingService.isPaired()
         val token = crypto.loadAccessToken()
@@ -62,7 +87,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 deviceId = DeviceInfoProvider.getStableDeviceId(application),
                 scannerEnabled = !paired,
                 statusMessage = if (paired) "Dispositivo pareado" else "Aguardando pareamento",
-                serverUrl = serverUrl
+                serverUrl = serverUrl,
+                isNetworkAvailable = initialNetworkAvailable
             )
         }
 
@@ -81,8 +107,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        modelInitJob = viewModelScope.launch(Dispatchers.IO) {
+            initializeModel()
+        }
+
         if (paired && !token.isNullOrBlank()) {
             rebuildApiService(serverUrl, token)
+        }
+    }
+
+    private suspend fun initializeModel() {
+        _uiState.update { it.copy(modelStatus = ModelStatus.Checking) }
+
+        val result = modelProvider.ensure { progress ->
+            _uiState.update {
+                it.copy(
+                    modelStatus = ModelStatus.Downloading,
+                    modelDownloadProgress = progress
+                )
+            }
+        }
+
+        result.fold(
+            onSuccess = {
+                _uiState.update { it.copy(modelStatus = ModelStatus.Initializing) }
+                try {
+                    embeddingModel.initialize()
+                    _uiState.update { it.copy(modelStatus = ModelStatus.Ready) }
+                } catch (ex: Exception) {
+                    Log.e(TAG, "Falha ao inicializar modelo: ${ex.message}", ex)
+                    _uiState.update {
+                        it.copy(
+                            modelStatus = ModelStatus.Error,
+                            modelError = "Falha ao carregar modelo"
+                        )
+                    }
+                }
+            },
+            onFailure = { ex ->
+                Log.e(TAG, "Falha ao obter modelo: ${ex.message}", ex)
+                _uiState.update {
+                    it.copy(
+                        modelStatus = ModelStatus.Error,
+                        modelError = "Falha ao baixar modelo"
+                    )
+                }
+            }
+        )
+    }
+
+    fun retryModelDownload() {
+        modelInitJob?.cancel()
+        modelInitJob = viewModelScope.launch(Dispatchers.IO) {
+            initializeModel()
         }
     }
 
@@ -99,6 +176,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showSettings = visible) }
         if (shouldRefresh) {
             refreshRecentLogs()
+        }
+    }
+
+    fun unpair() {
+        viewModelScope.launch(Dispatchers.IO) {
+            pairingService.unpair()
+            _uiState.update {
+                it.copy(
+                    isPaired = false,
+                    scannerEnabled = true,
+                    showSettings = false,
+                    statusMessage = "Despareado",
+                    deviceId = null,
+                    serverUrl = pairingService.getLastServerUrl(),
+                    baseLoaded = false,
+                    baseRosterCount = 0,
+                    recentLogs = emptyList()
+                )
+            }
         }
     }
 
@@ -463,16 +559,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         heartbeatJob?.cancel()
         logSyncJob?.cancel()
         recognitionResetJob?.cancel()
+        modelInitJob?.cancel()
         successPlayer?.release()
         successPlayer = null
         embeddingModel.close()
+        connectivityManager.unregisterNetworkCallback(networkCallback)
     }
 
     companion object {
         private const val TAG = "MainViewModel"
         private const val LOW_LIGHT_ENTER_THRESHOLD = 70f
         private const val LOW_LIGHT_EXIT_THRESHOLD = 95f
-        private const val RECOGNITION_RESET_DELAY_MILLIS = 3_000L
+        private const val RECOGNITION_RESET_DELAY_MILLIS = 1_500L
     }
 }
 
@@ -480,6 +578,14 @@ enum class RecognitionStatus {
     Idle,
     Detecting,
     Recognized,
+    Error
+}
+
+enum class ModelStatus {
+    Checking,
+    Downloading,
+    Initializing,
+    Ready,
     Error
 }
 
@@ -507,5 +613,9 @@ data class MainUiState(
     val lastHeartbeatEpochSeconds: Long? = null,
     val ambientLuminance: Float? = null,
     val isLowLight: Boolean = false,
-    val recentLogs: List<RecognitionLogEntry> = emptyList()
+    val recentLogs: List<RecognitionLogEntry> = emptyList(),
+    val modelStatus: ModelStatus = ModelStatus.Checking,
+    val modelDownloadProgress: Float = 0f,
+    val modelError: String? = null,
+    val isNetworkAvailable: Boolean = false
 )

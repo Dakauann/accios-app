@@ -4,8 +4,10 @@ import android.Manifest
 import android.app.Activity
 import android.os.Bundle
 import android.view.WindowManager
+import com.gdreducacional.totemapp.BuildConfig
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
@@ -14,7 +16,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -43,8 +49,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -63,19 +71,16 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.gdreducacional.totemapp.storage.RecognitionLogEntry
 import com.gdreducacional.totemapp.ui.theme.AcciosTheme
+import com.gdreducacional.totemapp.ui.theme.AcciosColors
 import com.gdreducacional.totemapp.views.CameraView
 import com.gdreducacional.totemapp.views.QrScannerView
-import com.gdreducacional.totemapp.services.UpdatesService
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -88,9 +93,15 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        Log.i(TAG, "Inicializando UpdatesService via onCreate")
-        UpdatesService.start(this)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.dark(
+                android.graphics.Color.TRANSPARENT
+            )
+        )
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {
             AcciosTheme {
@@ -136,21 +147,25 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
 
     val liquidBackground = remember {
         Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF1F1C2C),
-                Color(0xFF928DAB)
-            )
+            colors = listOf(AcciosColors.gradientStart, AcciosColors.gradientEnd)
         )
     }
 
-    if (state.showSettings) {
+    AnimatedVisibility(
+        visible = state.showSettings,
+        enter = fadeIn(animationSpec = tween(260)) + scaleIn(initialScale = 0.96f, animationSpec = tween(320)),
+        exit = fadeOut(animationSpec = tween(200)) + scaleOut(targetScale = 0.96f, animationSpec = tween(240))
+    ) {
         SettingsScreen(
             state = state,
             onDismiss = { mainViewModel.setSettingsVisible(false) },
             onRefreshLogs = { mainViewModel.refreshRecentLogs() },
+            onUnpair = { mainViewModel.unpair() },
             background = liquidBackground
         )
-    } else {
+    }
+
+    if (!state.showSettings) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -167,6 +182,13 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
                         onQrDetected = mainViewModel::onQrDetected,
                         onScannerError = { mainViewModel.markRecognitionStatus(RecognitionStatus.Error, it) }
                     )
+                } else if (state.modelStatus != ModelStatus.Ready) {
+                    ModelStatusOverlay(
+                        status = state.modelStatus,
+                        progress = state.modelDownloadProgress,
+                        error = state.modelError,
+                        onRetry = { mainViewModel.retryModelDownload() }
+                    )
                 } else {
                     FaceRecognitionView(
                         state = state,
@@ -176,11 +198,14 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
                 }
             }
 
-            Box(
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(end = 24.dp, top = 28.dp)
+                    .padding(end = 24.dp, top = 28.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                ConnectivityIndicator(state = state)
                 SettingsButton(
                     onToggle = { mainViewModel.toggleSettings() }
                 )
@@ -191,15 +216,14 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (!state.scannerEnabled && permissionState.status.isGranted) {
+            if (!state.scannerEnabled && permissionState.status.isGranted && state.modelStatus == ModelStatus.Ready) {
                 Text(
                     text = "GDREdu",
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(start = 24.dp, top = 32.dp),
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold
+                    color = AcciosColors.textPrimary
                 )
 
                 GlassDateTime(
@@ -224,7 +248,7 @@ private fun CameraPermissionInfo(shouldExplain: Boolean, onRequestPermission: ()
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.4f))
+            .background(AcciosColors.glassElevated.copy(alpha = 0.4f))
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
@@ -232,21 +256,22 @@ private fun CameraPermissionInfo(shouldExplain: Boolean, onRequestPermission: ()
         Text(
             text = if (shouldExplain) "Precisamos da câmera para escanear o QRCode." else "Solicitando acesso à câmera...",
             style = MaterialTheme.typography.titleMedium,
-            color = Color.White
+            color = AcciosColors.textPrimary
         )
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onRequestPermission,
+            modifier = Modifier.height(56.dp),
             shape = RoundedCornerShape(20.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White.copy(alpha = 0.15f),
-                contentColor = Color.White
+                containerColor = AcciosColors.buttonGlass,
+                contentColor = AcciosColors.textPrimary
             )
         ) {
             Text(
                 text = "Permitir câmera",
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.bodyLarge
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelLarge
             )
         }
     }
@@ -276,26 +301,25 @@ private fun PairingScannerSection(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.Center)
-                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(32.dp))
+                .background(AcciosColors.glassElevated, RoundedCornerShape(32.dp))
                 .padding(horizontal = 32.dp, vertical = 24.dp)
         ) {
             Text(
                 text = "Escaneie o QRCode",
                 style = MaterialTheme.typography.headlineMedium,
-                color = Color.White,
-                fontWeight = FontWeight.Bold
+                color = AcciosColors.textPrimary
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = state.statusMessage ?: "Aponte a câmera para o QRCode fornecido",
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.White.copy(alpha = 0.85f)
+                color = AcciosColors.textSecondary
             )
             if (state.isPairingInProgress) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "Processando...",
-                    color = Color.White,
+                    color = AcciosColors.textPrimary,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -303,7 +327,7 @@ private fun PairingScannerSection(
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = it,
-                    color = Color(0xFFFF8A80),
+                    color = AcciosColors.errorLight,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -315,19 +339,58 @@ private fun PairingScannerSection(
 private fun SettingsButton(modifier: Modifier = Modifier, onToggle: () -> Unit) {
     Surface(
         modifier = modifier,
-        color = Color.White.copy(alpha = 0.15f),
+        color = AcciosColors.buttonGlass,
         shape = CircleShape
     ) {
         IconButton(
             onClick = onToggle,
-            modifier = Modifier.padding(horizontal = 4.dp)
+            modifier = Modifier.size(56.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,
                 contentDescription = "Configurações",
-                tint = Color.White
+                tint = AcciosColors.textPrimary,
+                modifier = Modifier.size(28.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun ConnectivityIndicator(state: MainUiState) {
+    val now = System.currentTimeMillis() / 1000L
+    val syncRecent = state.lastSyncEpochSeconds?.let { (now - it) < 40 } == true
+
+    val dotColor = when {
+        !state.isNetworkAvailable -> AcciosColors.error
+        syncRecent -> AcciosColors.success
+        else -> AcciosColors.detecting
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "connectivityPulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    val effectiveAlpha = if (state.isNetworkAvailable && syncRecent) 1f else pulseAlpha
+
+    Surface(
+        color = AcciosColors.glassElevated,
+        shape = CircleShape
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .padding(14.dp)
+                .clip(CircleShape)
+                .background(dotColor.copy(alpha = effectiveAlpha))
+        )
     }
 }
 
@@ -336,104 +399,156 @@ private fun SettingsScreen(
     state: MainUiState,
     onDismiss: () -> Unit,
     onRefreshLogs: () -> Unit,
+    onUnpair: () -> Unit,
     background: Brush
 ) {
     val logsState = rememberLazyListState()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(background)
+            .background(AcciosColors.surfaceDeep)
     ) {
-        Surface(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 32.dp, vertical = 36.dp),
-            shape = RoundedCornerShape(32.dp),
-            color = Color(0xFF1B1A29).copy(alpha = 0.95f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+                .padding(horizontal = 32.dp, vertical = 28.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(28.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(
-                            text = "Configurações",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = state.statusMessage ?: "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.7f)
-                        )
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "Fechar",
-                            tint = Color.White
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                SettingsInfoSection(state)
-
-                Spacer(modifier = Modifier.height(28.dp))
-
                 Text(
-                    text = "Últimos registros",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
-                    fontWeight = FontWeight.Medium
+                    text = "Configurações",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = AcciosColors.textPrimary
                 )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Fechar",
+                        tint = AcciosColors.textPrimary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
 
-                Spacer(modifier = Modifier.height(12.dp))
+            if (!state.statusMessage.isNullOrBlank()) {
+                Text(
+                    text = state.statusMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AcciosColors.textTertiary,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
 
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
                 LazyColumn(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth(),
-                    state = logsState,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
-                    if (state.recentLogs.isEmpty()) {
-                        item {
-                            Text(
-                                text = "Nenhum log disponível",
-                                color = Color.White.copy(alpha = 0.7f),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    } else {
-                        items(state.recentLogs) { entry ->
-                            LogEntryRow(entry)
-                        }
+                    item {
+                        Text(
+                            text = "Informações",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = AcciosColors.textPrimary,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
                     }
+                    item { SettingsInfoSection(state) }
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Button(
-                    onClick = onRefreshLogs,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.16f),
-                        contentColor = Color.White
-                    )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
                 ) {
-                    Text("Atualizar registros")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Últimos registros",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = AcciosColors.textPrimary
+                        )
+                        Button(
+                            onClick = onRefreshLogs,
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AcciosColors.buttonGlass,
+                                contentColor = AcciosColors.textPrimary
+                            )
+                        ) {
+                            Text(
+                                text = "Atualizar",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        state = logsState,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 12.dp)
+                    ) {
+                        if (state.recentLogs.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Face,
+                                            contentDescription = null,
+                                            tint = AcciosColors.textDisabled,
+                                            modifier = Modifier.size(48.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text = "Nenhum registro",
+                                            color = AcciosColors.textTertiary,
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "Reconhecimentos aparecerão aqui",
+                                            color = AcciosColors.textDim,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            items(state.recentLogs) { entry ->
+                                LogEntryRow(entry)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -455,12 +570,16 @@ private fun SettingsInfoSection(state: MainUiState) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SettingsInfoRow("Status do tablet", tabletStatus)
         SettingsInfoRow("Device ID", deviceIdLabel)
-        SettingsInfoRow("Servidor", serverLabel)
+        if (BuildConfig.DEBUG) {
+            SettingsInfoRow("Servidor", serverLabel)
+        }
         SettingsInfoRow("Base local", baseStatusLabel)
         SettingsInfoRow("Sync da base", baseSyncLabel)
         SettingsInfoRow("Sync de logs", lastSyncLabel)
         SettingsInfoRow("Último heartbeat", lastHeartbeatLabel)
-        SettingsInfoRow("Nível de iluminação", luminanceLabel)
+        if (BuildConfig.DEBUG) {
+            SettingsInfoRow("Nível de iluminação", luminanceLabel)
+        }
     }
 }
 
@@ -468,22 +587,21 @@ private fun SettingsInfoSection(state: MainUiState) {
 private fun SettingsInfoRow(label: String, value: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color.White.copy(alpha = 0.06f),
+        color = AcciosColors.glassCard,
         shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        border = BorderStroke(1.dp, AcciosColors.glassCardBorder)
     ) {
         Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.65f)
+                color = AcciosColors.textDim
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold
+                color = AcciosColors.textPrimary
             )
         }
     }
@@ -493,23 +611,22 @@ private fun SettingsInfoRow(label: String, value: String) {
 private fun LogEntryRow(entry: RecognitionLogEntry) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color.White.copy(alpha = 0.08f),
+        color = AcciosColors.glassCard,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))
+        border = BorderStroke(1.dp, AcciosColors.glassCardBorder)
     ) {
         val personLabel = entry.personId.ifBlank { "-" }
         Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             Text(
                 text = "ID $personLabel",
                 style = MaterialTheme.typography.bodyLarge,
-                color = Color.White,
-                fontWeight = FontWeight.Medium
+                color = AcciosColors.textPrimary
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = formatIsoTimestamp(entry.timestampIso),
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.8f)
+                color = AcciosColors.textSecondary
             )
         }
     }
@@ -534,8 +651,8 @@ private fun GlassDateTime(modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(32.dp),
-        color = Color.White.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f))
+        color = AcciosColors.glass,
+        border = BorderStroke(1.dp, AcciosColors.glassBorder)
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
@@ -544,15 +661,13 @@ private fun GlassDateTime(modifier: Modifier = Modifier) {
         ) {
             Text(
                 text = currentTime,
-                color = Color.White,
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Bold
+                color = AcciosColors.textPrimary,
+                style = MaterialTheme.typography.displayLarge
             )
             Text(
                 text = formattedDate,
-                color = Color.White.copy(alpha = 0.85f),
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Medium
+                color = AcciosColors.textSecondary,
+                style = MaterialTheme.typography.titleLarge
             )
         }
     }
@@ -575,8 +690,8 @@ private fun LowLightGlowOverlay(isActive: Boolean, modifier: Modifier = Modifier
                     .background(
                         brush = Brush.horizontalGradient(
                             colors = listOf(
-                                Color(0xFFFFF8E1).copy(alpha = 0f),
-                                Color(0xFFFFECB3).copy(alpha = 0.7f)
+                                AcciosColors.glowWarmFade.copy(alpha = 0f),
+                                AcciosColors.glowWarm.copy(alpha = 0.7f)
                             )
                         )
                     )
@@ -590,8 +705,8 @@ private fun LowLightGlowOverlay(isActive: Boolean, modifier: Modifier = Modifier
                     .background(
                         brush = Brush.horizontalGradient(
                             colors = listOf(
-                                Color(0xFFFFECB3).copy(alpha = 0.7f),
-                                Color(0xFFFFF8E1).copy(alpha = 0f)
+                                AcciosColors.glowWarm.copy(alpha = 0.7f),
+                                AcciosColors.glowWarmFade.copy(alpha = 0f)
                             )
                         )
                     )
@@ -607,30 +722,30 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
 
     var primaryText = ""
     var secondaryText: String? = null
-    var accentColor = Color.White.copy(alpha = 0.8f)
-    var backgroundColor = Color.White.copy(alpha = 0.18f)
+    var accentColor = AcciosColors.textSecondary
+    var backgroundColor = AcciosColors.glass
     var icon = Icons.Rounded.Face
 
     when (status) {
         RecognitionStatus.Recognized -> {
-            accentColor = Color(0xFF43A047)
-            backgroundColor = accentColor.copy(alpha = 0.22f)
+            accentColor = AcciosColors.success
+            backgroundColor = AcciosColors.success.copy(alpha = 0.22f)
             primaryText = state.recognizedPersonName?.takeIf { it.isNotBlank() } ?: "Identidade confirmada"
             secondaryText = state.recognitionMessage ?: "Acesso liberado"
             icon = Icons.Rounded.CheckCircle
         }
 
         RecognitionStatus.Error -> {
-            accentColor = Color(0xFFE53935)
-            backgroundColor = accentColor.copy(alpha = 0.22f)
+            accentColor = AcciosColors.error
+            backgroundColor = AcciosColors.error.copy(alpha = 0.22f)
             primaryText = state.recognitionMessage ?: "Acesso negado"
             secondaryText = "Tente novamente ou procure apoio"
             icon = Icons.Rounded.Close
         }
 
         RecognitionStatus.Detecting -> {
-            accentColor = Color(0xFF42A5F5)
-            backgroundColor = Color.White.copy(alpha = 0.18f)
+            accentColor = AcciosColors.detecting
+            backgroundColor = AcciosColors.glass
             primaryText = state.recognitionMessage ?: "Centralize o rosto"
             secondaryText = "Aguarde alguns instantes para calibrar"
             icon = Icons.Rounded.Face
@@ -645,6 +760,18 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
         label = "iconScale"
     )
 
+    val infiniteTransition = rememberInfiniteTransition(label = "detectPulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+    val effectiveIconScale = if (status == RecognitionStatus.Detecting) pulseScale else iconScale
+
     AnimatedVisibility(
         visible = isVisible,
         enter = fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.92f, animationSpec = tween(320)),
@@ -657,7 +784,7 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                 .padding(horizontal = 32.dp),
             shape = RoundedCornerShape(40.dp),
             color = backgroundColor,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f))
+            border = BorderStroke(1.dp, AcciosColors.glassBorder.copy(alpha = 0.32f))
         ) {
             Column(
                 modifier = Modifier
@@ -669,14 +796,19 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                 Box(
                     modifier = Modifier
                         .size(96.dp)
-                        .scale(iconScale)
+                        .scale(effectiveIconScale)
                         .clip(CircleShape)
                         .background(accentColor.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = icon,
-                        contentDescription = null,
+                        contentDescription = when (status) {
+                            RecognitionStatus.Recognized -> "Reconhecido"
+                            RecognitionStatus.Error -> "Erro de reconhecimento"
+                            RecognitionStatus.Detecting -> "Detectando rosto"
+                            else -> null
+                        },
                         tint = accentColor,
                         modifier = Modifier.size(48.dp)
                     )
@@ -685,16 +817,15 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                 if (primaryText.isNotBlank()) {
                     Text(
                         text = primaryText,
-                        color = Color.White,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.SemiBold
+                        color = AcciosColors.textPrimary,
+                        style = MaterialTheme.typography.headlineMedium
                     )
                 }
 
                 secondaryText?.let {
                     Text(
                         text = it,
-                        color = Color.White.copy(alpha = 0.85f),
+                        color = AcciosColors.textSecondary,
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
@@ -704,11 +835,112 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
                         val percent = (confidence * 100).coerceIn(0.0, 100.0)
                         Text(
                             text = "Confiança: ${"%.1f".format(percent)}%",
-                            color = Color.White.copy(alpha = 0.7f),
+                            color = AcciosColors.textTertiary,
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelStatusOverlay(
+    status: ModelStatus,
+    progress: Float,
+    error: String?,
+    onRetry: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .background(AcciosColors.glassElevated, RoundedCornerShape(32.dp))
+                .padding(horizontal = 40.dp, vertical = 32.dp)
+        ) {
+            when (status) {
+                ModelStatus.Checking -> {
+                    CircularProgressIndicator(
+                        color = AcciosColors.textPrimary,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Verificando modelo...",
+                        color = AcciosColors.textPrimary,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+                ModelStatus.Downloading -> {
+                    Text(
+                        text = "Baixando modelo",
+                        color = AcciosColors.textPrimary,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth(0.7f)
+                            .height(10.dp)
+                            .clip(RoundedCornerShape(5.dp)),
+                        color = AcciosColors.textPrimary,
+                        trackColor = AcciosColors.divider
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "${(progress * 100).toInt()}%",
+                        color = AcciosColors.textTertiary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                ModelStatus.Initializing -> {
+                    CircularProgressIndicator(
+                        color = AcciosColors.textPrimary,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Preparando modelo...",
+                        color = AcciosColors.textPrimary,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+                ModelStatus.Error -> {
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "Erro ao carregar modelo",
+                        tint = AcciosColors.errorLight,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = error ?: "Erro desconhecido",
+                        color = AcciosColors.errorLight,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.height(56.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AcciosColors.buttonGlass,
+                            contentColor = AcciosColors.textPrimary
+                        )
+                    ) {
+                        Text(
+                            text = "Tentar novamente",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                }
+                ModelStatus.Ready -> {}
             }
         }
     }

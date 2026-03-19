@@ -155,17 +155,18 @@ class EncodingRepository(context: Context) {
             return null
         }
         var bestIndex = -1
-        var bestDistance = Float.MAX_VALUE
+        var bestSquaredDistance = Float.MAX_VALUE
         current.embeddings.forEachIndexed { index, stored ->
-            val distance = l2Distance(embedding, stored)
-            if (distance < bestDistance) {
-                bestDistance = distance
+            val sqDist = squaredL2Distance(embedding, stored, bestSquaredDistance)
+            if (sqDist < bestSquaredDistance) {
+                bestSquaredDistance = sqDist
                 bestIndex = index
             }
         }
         if (bestIndex < 0) return null
         val personId = current.ids[bestIndex]
         val info = current.roster[personId]
+        val bestDistance = sqrt(bestSquaredDistance.toDouble()).toFloat()
         return MatchCandidate(personId, info?.displayName, info?.entityType, bestDistance)
     }
 
@@ -300,12 +301,17 @@ class EncodingRepository(context: Context) {
     }
 
     private fun l2Distance(a: FloatArray, b: FloatArray): Float {
+        return sqrt(squaredL2Distance(a, b).toDouble()).toFloat()
+    }
+
+    private fun squaredL2Distance(a: FloatArray, b: FloatArray, earlyExitThreshold: Float = Float.MAX_VALUE): Float {
         var sum = 0f
         for (i in a.indices) {
             val diff = a[i] - b[i]
             sum += diff * diff
+            if (sum >= earlyExitThreshold) return sum
         }
-        return sqrt(sum.toDouble()).toFloat()
+        return sum
     }
 
     private fun setLastSyncEpochSeconds(value: Long) {
@@ -322,10 +328,10 @@ class EncodingRepository(context: Context) {
         private const val PREF_LAST_SYNC = "last_sync_epoch"
         private const val ENCODINGS_DIR_NAME = "encodings"
         private const val DATASET_FILE_NAME = "dataset.json"
-        const val EMBEDDING_MODEL_FILENAME = "buffalo_s.onnx"
-        private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.15f
-        private const val MIN_THRESHOLD_L2 = 0.6f
-        private const val MAX_THRESHOLD_L2 = 1.35f
+        const val EMBEDDING_MODEL_FILENAME = "buffalo_m.onnx"
+        private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.05f
+        private const val MIN_THRESHOLD_L2 = 0.5f
+        private const val MAX_THRESHOLD_L2 = 1.24f
         private const val DEFAULT_TARGET_FMR = 1e-4
         private const val MIN_TARGET_FMR = 1e-5
         private const val MAX_TARGET_FMR = 0.05

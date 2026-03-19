@@ -167,6 +167,12 @@ class ECCCryptoManager(context: Context) {
         return status
     }
 
+    fun clearPairing() {
+        listOf(privateKeyFile, publicKeyFile, serverPublicKeyFile, accessTokenFile).forEach { file ->
+            if (file.exists()) file.delete()
+        }
+    }
+
     fun encrypt(data: Any, serverPublicKeyHexOverride: String? = null): String {
         val privateKey = loadPrivateKey() ?: throw IllegalStateException("Device private key not found")
         val payload = data.toJsonString()

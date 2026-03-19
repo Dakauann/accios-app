@@ -97,6 +97,6 @@ class RecognitionEngine(
 
     companion object {
         private const val TAG = "RecognitionEngine"
-        private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.15f
+        private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.05f
     }
 }

@@ -9,7 +9,6 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.gdreducacional.totemapp.data.EncodingRepository
 import java.io.File
-import java.io.IOException
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
@@ -20,23 +19,29 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
     private val sessionLock = Any()
 
     @Volatile
-    private var session: OrtSession
+    private var session: OrtSession? = null
     @Volatile
-    private var embeddingDim: Int
-    private var inputName: String
+    private var embeddingDim: Int = DEFAULT_EMBEDDING_DIM
+    private var inputName: String = ""
 
-    init {
-        val descriptor = createSession()
-        session = descriptor.session
-        embeddingDim = descriptor.embeddingDim
-        inputName = descriptor.inputName
+    fun isReady(): Boolean = session != null
+
+    fun initialize() {
+        synchronized(sessionLock) {
+            if (session != null) return
+            val descriptor = createSession()
+            session = descriptor.session
+            embeddingDim = descriptor.embeddingDim
+            inputName = descriptor.inputName
+        }
     }
 
     fun embed(source: Bitmap): FloatArray? {
         val tensor = bitmapToTensor(source) ?: return null
         return try {
             synchronized(sessionLock) {
-                session.run(mapOf(inputName to tensor)).use { outputs ->
+                val currentSession = session ?: return null
+                currentSession.run(mapOf(inputName to tensor)).use { outputs ->
                     val value = outputs[0].value
                     val rawEmbedding = when (value) {
                         is Array<*> -> (value.firstOrNull() as? FloatArray)?.copyOf()
@@ -60,7 +65,7 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
     fun reloadInterpreter() {
         synchronized(sessionLock) {
             try {
-                session.close()
+                session?.close()
             } catch (_: Exception) {
             }
             val descriptor = createSession()
@@ -73,9 +78,10 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
     override fun close() {
         synchronized(sessionLock) {
             try {
-                session.close()
+                session?.close()
             } catch (_: Exception) {
             }
+            session = null
         }
     }
 
@@ -98,24 +104,11 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
     }
 
     private fun loadModelBytes(): ByteArray {
-        val customModel = File(appContext.filesDir, "${CUSTOM_MODEL_DIR}/${EncodingRepository.EMBEDDING_MODEL_FILENAME}")
-        return if (customModel.exists()) {
-            runCatching { customModel.readBytes() }
-                .onFailure { Log.e(TAG, "Falha ao ler modelo customizado: ${it.message}") }
-                .getOrNull()
-                ?: loadAssetModel()
-        } else {
-            loadAssetModel()
+        val modelFile = File(appContext.filesDir, "${CUSTOM_MODEL_DIR}/${EncodingRepository.EMBEDDING_MODEL_FILENAME}")
+        if (!modelFile.exists()) {
+            throw IllegalStateException("Modelo nao encontrado em ${modelFile.absolutePath}")
         }
-    }
-
-    private fun loadAssetModel(): ByteArray {
-        return try {
-            appContext.assets.open(DEFAULT_MODEL_ASSET).use { it.readBytes() }
-        } catch (ex: IOException) {
-            Log.e(TAG, "Modelo padrão '${DEFAULT_MODEL_ASSET}' não encontrado: ${ex.message}")
-            throw ex
-        }
+        return modelFile.readBytes()
     }
 
     private fun bitmapToTensor(source: Bitmap): OnnxTensor? {
@@ -186,11 +179,10 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
         private const val TAG = "FaceEmbeddingModel"
         private const val INPUT_SIZE = 112
         private const val INPUT_CHANNELS = 3
-        private const val DEFAULT_THREADS = 2
+        private const val DEFAULT_THREADS = 4
         private const val PIXEL_MEAN = 127.5f
         private const val PIXEL_STD = 128f
         private const val CUSTOM_MODEL_DIR = "encodings"
-        private const val DEFAULT_MODEL_ASSET = "models/${EncodingRepository.EMBEDDING_MODEL_FILENAME}"
         private const val DEFAULT_EMBEDDING_DIM = 512
     }
 }

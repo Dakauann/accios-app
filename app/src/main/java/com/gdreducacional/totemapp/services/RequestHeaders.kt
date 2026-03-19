@@ -18,12 +18,6 @@ object RequestHeaders {
         return this
     }
 
-    fun Request.Builder.applyApkDownloadHeaders(): Request.Builder {
-        header("Accept", CONTENT_TYPE_APK)
-        header("User-Agent", USER_AGENT)
-        return this
-    }
-
     fun Request.Builder.applyDefaultHeaders(): Request.Builder {
         header("User-Agent", USER_AGENT)
         return this
