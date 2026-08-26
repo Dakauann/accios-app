@@ -293,7 +293,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun submitRecognitionCandidate(candidate: RecognitionCandidate, onFinished: (Boolean) -> Unit) {
+    fun submitRecognitionCandidate(
+        candidate: RecognitionCandidate,
+        isSubjectPresent: () -> Boolean = { true },
+        onFinished: (Boolean) -> Unit
+    ) {
         if (candidate.frames.isEmpty()) {
             Log.w(TAG, "submitRecognition: frames vazio trackId=${candidate.trackId}")
             onRecognitionError("Falha ao processar imagem", onFinished)
@@ -342,9 +346,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     registerRecognitionSuccess(result.personId, result.displayName, result.entityType, result.confidence.toDouble())
                     onFinished(true)
-                } else {
+                } else if (isSubjectPresent()) {
                     Log.i(TAG, "Recognition FAILED (não reconhecido) trackId=${candidate.trackId}")
                     onRecognitionFailed("Não reconhecido")
+                    onFinished(false)
+                } else {
+                    Log.i(TAG, "Recognition FAILED sem rosto na câmera; ignorando overlay trackId=${candidate.trackId}")
+                    applyRecognitionIdleState()
                     onFinished(false)
                 }
             }

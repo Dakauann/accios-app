@@ -80,6 +80,7 @@ import com.gdreducacional.totemapp.storage.RecognitionLogEntry
 import com.gdreducacional.totemapp.ui.theme.AcciosTheme
 import com.gdreducacional.totemapp.ui.theme.AcciosColors
 import com.gdreducacional.totemapp.views.CameraView
+import com.gdreducacional.totemapp.views.FaceCaptureStatus
 import com.gdreducacional.totemapp.views.QrScannerView
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
@@ -746,8 +747,13 @@ private fun RecognitionGlass(modifier: Modifier = Modifier, state: MainUiState) 
         RecognitionStatus.Detecting -> {
             accentColor = AcciosColors.detecting
             backgroundColor = AcciosColors.glass
-            primaryText = state.recognitionMessage ?: "Centralize o rosto"
-            secondaryText = "Aguarde alguns instantes para calibrar"
+            primaryText = state.recognitionMessage ?: "Olhe para a câmera"
+            secondaryText = when (state.recognitionMessage) {
+                PROMPT_FACE_CLIPPED -> "O rosto precisa aparecer por completo"
+                PROMPT_FACE_TOO_SMALL -> "Chegue um pouco mais perto do totem"
+                PROMPT_VERIFYING -> "Aguarde um instante"
+                else -> "Aguarde um instante"
+            }
             icon = Icons.Rounded.Face
         }
 
@@ -956,7 +962,7 @@ private fun FaceRecognitionView(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val previewView = remember { PreviewView(context) }
-    var detectionActive by remember { mutableStateOf(false) }
+    var captureStatus by remember { mutableStateOf(FaceCaptureStatus.NONE) }
 
     LaunchedEffect(state.isPaired) {
         if (state.isPaired) {
@@ -964,9 +970,12 @@ private fun FaceRecognitionView(
                 lifecycleOwner = lifecycleOwner,
                 previewView = previewView,
                 context = context,
-                onFacesDetected = { faces -> detectionActive = faces.any { it.isFrontFacing } },
+                onCaptureStatus = { status -> captureStatus = status },
                 onRecognitionCandidate = { candidate ->
-                    mainViewModel.submitRecognitionCandidate(candidate) { success ->
+                    mainViewModel.submitRecognitionCandidate(
+                        candidate = candidate,
+                        isSubjectPresent = { viewModel.hasLivePrimaryFace() }
+                    ) { success ->
                         viewModel.onRecognitionProcessed(success)
                     }
                 },
@@ -975,6 +984,7 @@ private fun FaceRecognitionView(
                 }
             )
         } else {
+            captureStatus = FaceCaptureStatus.NONE
             mainViewModel.updateAmbientLuminance(LOW_LIGHT_RESET_VALUE)
             viewModel.unbindCamera(context)
         }
@@ -986,10 +996,13 @@ private fun FaceRecognitionView(
         }
     }
 
-    LaunchedEffect(detectionActive, state.recognitionStatus, state.recognitionMessage) {
-        if (!detectionActive) {
+    LaunchedEffect(captureStatus, state.recognitionStatus, state.recognitionMessage) {
+        val atTotem = captureStatus == FaceCaptureStatus.READY || captureStatus == FaceCaptureStatus.CLIPPED
+        if (!atTotem) {
             delay(PERSON_EXIT_RESET_DELAY_MILLIS)
-            if (!detectionActive) {
+            val stillAway = captureStatus != FaceCaptureStatus.READY &&
+                captureStatus != FaceCaptureStatus.CLIPPED
+            if (stillAway) {
                 when (state.recognitionStatus) {
                     RecognitionStatus.Recognized, RecognitionStatus.Error -> {
                         mainViewModel.resetRecognitionState()
@@ -1004,12 +1017,20 @@ private fun FaceRecognitionView(
             return@LaunchedEffect
         }
 
-        val shouldUpdatePrompt = state.recognitionStatus != RecognitionStatus.Detecting ||
-            state.recognitionMessage.isNullOrBlank() ||
-            state.recognitionMessage == "Centralize o rosto"
+        if (state.recognitionMessage == PROMPT_VERIFYING) {
+            return@LaunchedEffect
+        }
 
-        if (shouldUpdatePrompt) {
-            onRecognitionStatus(RecognitionStatus.Detecting, "Centralize o rosto")
+        if (captureStatus == FaceCaptureStatus.CLIPPED) {
+            delay(CLIPPED_PROMPT_DELAY_MILLIS)
+            if (captureStatus == FaceCaptureStatus.CLIPPED &&
+                state.recognitionMessage != PROMPT_VERIFYING &&
+                state.recognitionStatus != RecognitionStatus.Recognized &&
+                state.recognitionStatus != RecognitionStatus.Error &&
+                state.recognitionMessage != PROMPT_FACE_CLIPPED
+            ) {
+                onRecognitionStatus(RecognitionStatus.Detecting, PROMPT_FACE_CLIPPED)
+            }
         }
     }
 
@@ -1021,6 +1042,10 @@ private fun FaceRecognitionView(
 
 private const val LOW_LIGHT_RESET_VALUE = 120f
 private const val PERSON_EXIT_RESET_DELAY_MILLIS = 500L
+private const val CLIPPED_PROMPT_DELAY_MILLIS = 350L
+private const val PROMPT_FACE_CLIPPED = "Mostre o rosto inteiro"
+private const val PROMPT_FACE_TOO_SMALL = "Aproxime-se"
+private const val PROMPT_VERIFYING = "Verificando identidade..."
 private val PT_BR_LOCALE = Locale.forLanguageTag("pt-BR")
 
 private fun formatTimestamp(epochSeconds: Long): String {

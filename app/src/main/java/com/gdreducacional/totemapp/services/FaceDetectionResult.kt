@@ -84,7 +84,7 @@ class FaceRecognitionService {
         private const val TAG = "FaceRecognitionService"
         private const val MIN_FACE_SIZE = 0.15f
         private const val MAX_YAW_DEGREES = 18f
-        private const val MAX_PITCH_DEGREES = 15f
+        private const val MAX_PITCH_DEGREES = 25f
         private const val MAX_ROLL_DEGREES = 18f
         private const val ENABLE_DEBUG_LOGS = true
 

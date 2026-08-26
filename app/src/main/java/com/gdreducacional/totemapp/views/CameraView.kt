@@ -9,11 +9,14 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
 import android.graphics.Paint
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.compose.runtime.mutableStateListOf
 import androidx.core.content.ContextCompat
@@ -42,14 +45,18 @@ class CameraView : ViewModel() {
     private var lastRecognitionTimestamp = 0L
     private val recognitionHoldMillis = 3_000L
     private val faceTrackStates = mutableMapOf<Int, FaceTrackState>()
-    private var facesClearedSinceLastRecognition = true
     private var lastLuminanceNotified: Float? = null
+    private var lastGateReason: String? = null
+    private var consecutiveReadyFrames = 0
+    private var readyLocked = false
+    @Volatile private var lastCaptureStatus = FaceCaptureStatus.NONE
 
     fun bindCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: androidx.camera.view.PreviewView,
         context: Context,
         onFacesDetected: (List<FaceDetectionResult>) -> Unit = {},
+        onCaptureStatus: (FaceCaptureStatus) -> Unit = {},
         onRecognitionCandidate: (RecognitionCandidate) -> Unit = {},
         onAmbientLuminance: (Float) -> Unit = {}
     ) {
@@ -57,8 +64,13 @@ class CameraView : ViewModel() {
         faceService = FaceRecognitionService()
         recognitionCallback = onRecognitionCandidate
         luminanceCallback = onAmbientLuminance
-    lastLuminanceNotified = null
+        lastLuminanceNotified = null
+        lastGateReason = null
+        consecutiveReadyFrames = 0
+        readyLocked = false
+        lastCaptureStatus = FaceCaptureStatus.NONE
 
+        val mainExecutor = ContextCompat.getMainExecutor(context)
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
@@ -69,10 +81,24 @@ class CameraView : ViewModel() {
 
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                Size(ANALYSIS_TARGET_WIDTH, ANALYSIS_TARGET_HEIGHT),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                            )
+                        )
+                        .build()
+                )
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        processImageProxy(imageProxy, onFacesDetected)
+                        processImageProxy(
+                            imageProxy,
+                            onFacesDetected,
+                            { status -> mainExecutor.execute { onCaptureStatus(status) } }
+                        )
                     }
                 }
 
@@ -95,7 +121,11 @@ class CameraView : ViewModel() {
         }, ContextCompat.getMainExecutor(context))
     }
 
-    private fun processImageProxy(imageProxy: ImageProxy, onFacesDetected: (List<FaceDetectionResult>) -> Unit) {
+    private fun processImageProxy(
+        imageProxy: ImageProxy,
+        onFacesDetected: (List<FaceDetectionResult>) -> Unit,
+        onCaptureStatus: (FaceCaptureStatus) -> Unit
+    ) {
         val service = faceService
         if (service == null) {
             imageProxy.close()
@@ -112,10 +142,10 @@ class CameraView : ViewModel() {
         }
 
         val overlays = service.processFrame(imageProxy)
+        val (frameWidth, frameHeight) = rotatedFrameSize(imageProxy)
 
         detectedFaces.clear()
         if (overlays.isEmpty()) {
-            facesClearedSinceLastRecognition = true
             clearTrackStates()
             onFacesDetected(emptyList())
         } else {
@@ -132,11 +162,46 @@ class CameraView : ViewModel() {
 
         updateFaceTrackStates(overlays)
 
-        val recognitionTarget = overlays.firstOrNull { it.isFrontFacing }
+        val recognitionTarget = pickPrimaryDetection(overlays)
+        val captureStatus = if (recognitionTarget == null) {
+            FaceCaptureStatus.NONE
+        } else {
+            FaceCaptureGate.evaluate(
+                recognitionTarget.rect.left,
+                recognitionTarget.rect.top,
+                recognitionTarget.rect.right,
+                recognitionTarget.rect.bottom,
+                frameWidth,
+                frameHeight,
+                previouslyReady = readyLocked
+            )
+        }
+        readyLocked = captureStatus == FaceCaptureStatus.READY
+        if (readyLocked) {
+            consecutiveReadyFrames += 1
+        } else {
+            consecutiveReadyFrames = 0
+        }
+        lastCaptureStatus = captureStatus
+        onCaptureStatus(captureStatus)
+
         var frameBitmap: Bitmap? = null
-        if (recognitionTarget != null) {
+        val canCapture = recognitionTarget != null &&
+            captureStatus == FaceCaptureStatus.READY &&
+            !recognitionInFlight.get() &&
+            consecutiveReadyFrames >= READY_FRAME_THRESHOLD
+        if (canCapture) {
             frameBitmap = imageProxy.toFrameBitmap()
             maybeTriggerRecognition(frameBitmap, recognitionTarget)
+        } else if (recognitionTarget != null) {
+            logGate(
+                if (recognitionInFlight.get()) "in_flight" else captureStatus.name.lowercase(),
+                recognitionTarget.rect,
+                frameWidth,
+                frameHeight
+            )
+        } else {
+            lastGateReason = "none"
         }
 
         imageProxy.close()
@@ -146,26 +211,40 @@ class CameraView : ViewModel() {
     private fun maybeTriggerRecognition(frameBitmap: Bitmap, detection: FaceDetectionResult?) {
         val callback = recognitionCallback ?: return
         val candidate = detection ?: return
-        if (!candidate.isFrontFacing) return
-        val trackingId = candidate.trackingId ?: return
+        if (!candidate.isFrontFacing) {
+            logGate("no_front", candidate.rect, frameBitmap.width, frameBitmap.height)
+            return
+        }
+        val trackingId = candidate.trackingId ?: FALLBACK_TRACK_ID
         val trackState = faceTrackStates[trackingId] ?: return
-        if (trackState.consecutiveFrontFrames < STABLE_FRAME_THRESHOLD) return
+        if (trackState.consecutiveFrontFrames < STABLE_FRAME_THRESHOLD) {
+            logGate("not_stable", candidate.rect, frameBitmap.width, frameBitmap.height)
+            return
+        }
         if (recognitionInFlight.get()) return
 
         val now = SystemClock.elapsedRealtime()
-        val respectCooldown = now - lastRecognitionTimestamp < recognitionHoldMillis
-        if (respectCooldown && !facesClearedSinceLastRecognition) {
+        if (lastRecognitionTimestamp != 0L && now - lastRecognitionTimestamp < recognitionHoldMillis) {
+            logGate("cooldown", candidate.rect, frameBitmap.width, frameBitmap.height)
             return
         }
 
         val baseRect = trackState.lastBoundingRect ?: candidate.rect
-        val bounded = expandRect(baseRect, frameBitmap.width, frameBitmap.height)
-        val minSize = min(frameBitmap.width, frameBitmap.height) * MIN_FACE_SIZE_RATIO
-        if (bounded.width() < minSize || bounded.height() < minSize) return
+        val captureStatus = FaceCaptureGate.evaluate(
+            baseRect.left,
+            baseRect.top,
+            baseRect.right,
+            baseRect.bottom,
+            frameBitmap.width,
+            frameBitmap.height,
+            previouslyReady = true
+        )
+        if (captureStatus != FaceCaptureStatus.READY) {
+            logGate(captureStatus.name.lowercase(), baseRect, frameBitmap.width, frameBitmap.height)
+            return
+        }
 
-        val stableDuration = now - trackState.firstFrontFacingMillis
-        if (trackState.firstFrontFacingMillis == 0L || stableDuration < STABLE_DURATION_MILLIS) return
-        if (!isCentered(bounded, frameBitmap.width, frameBitmap.height)) return
+        val bounded = expandRect(baseRect, frameBitmap.width, frameBitmap.height)
 
         val faceRegion = try {
             Bitmap.createBitmap(
@@ -182,10 +261,10 @@ class CameraView : ViewModel() {
 
         val aligned = alignFaceBitmap(faceRegion, candidate, bounded)
         if (aligned == null) {
+            logGate("no_landmarks", baseRect, frameBitmap.width, frameBitmap.height)
             faceRegion.recycleSafely()
             return
         }
-
         if (aligned !== faceRegion) {
             faceRegion.recycleSafely()
         }
@@ -195,9 +274,40 @@ class CameraView : ViewModel() {
             return
         }
 
+        logGate("ready", baseRect, frameBitmap.width, frameBitmap.height)
         recognitionInFlight.set(true)
-        facesClearedSinceLastRecognition = false
         callback.invoke(RecognitionCandidate(trackingId, batch))
+    }
+
+    private fun logGate(reason: String, rect: Rect, frameWidth: Int, frameHeight: Int) {
+        if (reason == lastGateReason) return
+        lastGateReason = reason
+        Log.i(
+            TAG,
+            "gate reason=$reason rect=[${rect.left},${rect.top},${rect.right},${rect.bottom}] " +
+                "frame=${frameWidth}x${frameHeight}"
+        )
+    }
+
+    private fun pickPrimaryDetection(detections: List<FaceDetectionResult>): FaceDetectionResult? {
+        val primary = FaceCaptureGate.selectPrimary(
+            detections.map { detection ->
+                FaceBox(
+                    left = detection.rect.left,
+                    top = detection.rect.top,
+                    right = detection.rect.right,
+                    bottom = detection.rect.bottom,
+                    isFrontFacing = detection.isFrontFacing
+                )
+            }
+        ) ?: return null
+        return detections.firstOrNull { detection ->
+            detection.rect.left == primary.left &&
+                detection.rect.top == primary.top &&
+                detection.rect.right == primary.right &&
+                detection.rect.bottom == primary.bottom &&
+                detection.isFrontFacing == primary.isFrontFacing
+        }
     }
 
     fun unbindCamera(context: Context) {
@@ -208,7 +318,14 @@ class CameraView : ViewModel() {
         }, ContextCompat.getMainExecutor(context))
         luminanceCallback = null
         lastLuminanceNotified = null
+        lastGateReason = null
+        consecutiveReadyFrames = 0
+        readyLocked = false
+        lastCaptureStatus = FaceCaptureStatus.NONE
+        recognitionInFlight.set(false)
     }
+
+    fun hasLivePrimaryFace(): Boolean = lastCaptureStatus == FaceCaptureStatus.READY
 
     fun onRecognitionProcessed(success: Boolean) {
         lastRecognitionTimestamp = SystemClock.elapsedRealtime()
@@ -227,19 +344,15 @@ class CameraView : ViewModel() {
         val now = SystemClock.elapsedRealtime()
         val activeIds = HashSet<Int>()
         detections.forEach { result ->
-            val id = result.trackingId ?: return@forEach
+            val id = result.trackingId ?: FALLBACK_TRACK_ID
             activeIds += id
             val state = faceTrackStates.getOrPut(id) { FaceTrackState() }
             state.lastSeenMillis = now
             state.lastBoundingRect = Rect(result.rect)
             if (result.isFrontFacing) {
-                if (state.consecutiveFrontFrames == 0) {
-                    state.firstFrontFacingMillis = now
-                }
                 state.consecutiveFrontFrames = (state.consecutiveFrontFrames + 1).coerceAtMost(MAX_FRONT_FRAMES_TRACKED)
             } else {
                 state.consecutiveFrontFrames = 0
-                state.firstFrontFacingMillis = 0L
                 state.clearFrames()
             }
         }
@@ -568,7 +681,6 @@ private class FaceTrackState {
     var consecutiveFrontFrames: Int = 0
     var lastSeenMillis: Long = 0L
     var lastBoundingRect: Rect? = null
-    var firstFrontFacingMillis: Long = 0L
     val accumulator = FrameAccumulator(FRAME_AGGREGATION_COUNT, FRAME_AGGREGATION_WINDOW_MILLIS)
 
     fun clearFrames() {
@@ -610,15 +722,16 @@ private class FrameAccumulator(
 }
 
 private const val FACE_PADDING_RATIO = 0.25f
-private const val MIN_FACE_SIZE_RATIO = 0.25f
 private const val STABLE_FRAME_THRESHOLD = 2
-private const val STABLE_DURATION_MILLIS = 200L
+private const val READY_FRAME_THRESHOLD = 2
 private const val MAX_FRONT_FRAMES_TRACKED = 30
 private const val TRACK_STALE_TIMEOUT_MILLIS = 1_200L
 private const val FACE_INPUT_SIZE = 112
-private const val CENTER_TOLERANCE_RATIO = 0.2f
-private const val FRAME_AGGREGATION_COUNT = 1
-private const val FRAME_AGGREGATION_WINDOW_MILLIS = 400L
+private const val FRAME_AGGREGATION_COUNT = 2
+private const val FRAME_AGGREGATION_WINDOW_MILLIS = 500L
+private const val FALLBACK_TRACK_ID = -1
+private const val ANALYSIS_TARGET_WIDTH = 640
+private const val ANALYSIS_TARGET_HEIGHT = 480
 private val ARC_FACE_REFERENCE_POINTS = arrayOf(
     PointF(38.2946f, 51.6963f),
     PointF(73.5318f, 51.5014f),
@@ -631,13 +744,11 @@ private const val LINEAR_SOLVER_EPS = 1e-8
 
 private const val TAG = "CameraView"
 
-private fun isCentered(rect: Rect, frameWidth: Int, frameHeight: Int): Boolean {
-    val centerX = rect.exactCenterX()
-    val centerY = rect.exactCenterY()
-    val frameCenterX = frameWidth / 2f
-    val frameCenterY = frameHeight / 2f
-    val toleranceX = frameWidth * CENTER_TOLERANCE_RATIO / 2f
-    val toleranceY = frameHeight * CENTER_TOLERANCE_RATIO / 2f
-    return kotlin.math.abs(centerX - frameCenterX) <= toleranceX &&
-        kotlin.math.abs(centerY - frameCenterY) <= toleranceY
+private fun rotatedFrameSize(imageProxy: ImageProxy): Pair<Int, Int> {
+    val rotation = imageProxy.imageInfo.rotationDegrees
+    return if (rotation == 90 || rotation == 270) {
+        imageProxy.height to imageProxy.width
+    } else {
+        imageProxy.width to imageProxy.height
+    }
 }
