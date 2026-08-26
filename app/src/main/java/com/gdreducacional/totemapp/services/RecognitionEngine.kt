@@ -66,7 +66,8 @@ class RecognitionEngine(
         val candidate = topK.first()
         val distanceL2 = candidate.distance
         val cosineApprox = cosineFromL2(distanceL2)
-        val accepted = distanceL2 <= thresholdL2
+        val margin = if (topK.size >= 2) topK[1].distance - distanceL2 else Float.MAX_VALUE
+        val accepted = distanceL2 <= thresholdL2 && margin >= MIN_MATCH_MARGIN_L2
         val totalMs = (System.nanoTime() - t0) / 1_000_000L
 
         Log.i(
@@ -80,7 +81,8 @@ class RecognitionEngine(
                 "bestType=${candidate.entityType} " +
                 "distL2=${"%.4f".format(distanceL2)} cos=${"%.4f".format(cosineApprox)} " +
                 "thresholdL2=${"%.4f".format(thresholdL2)} " +
-                "margin=${"%.4f".format(thresholdL2 - distanceL2)} " +
+                "gapBest=${"%.4f".format(thresholdL2 - distanceL2)} " +
+                "secondGap=${"%.4f".format(margin)} " +
                 "embedMs=$embedMs totalMs=$totalMs " +
                 "topK=[$topSummary]"
         )
@@ -185,6 +187,7 @@ class RecognitionEngine(
     companion object {
         private const val TAG = "RecognitionEngine"
         private const val DEFAULT_MATCH_THRESHOLD_L2 = 1.05f
+        private const val MIN_MATCH_MARGIN_L2 = 0.08f
         private const val TOP_K_LOG = 3
     }
 }

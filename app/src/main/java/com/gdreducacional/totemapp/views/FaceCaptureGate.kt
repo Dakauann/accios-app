@@ -24,10 +24,45 @@ data class FaceBox(
 object FaceCaptureGate {
     const val EDGE_MARGIN_RATIO = 0.03f
     const val HOLD_EDGE_MARGIN_RATIO = 0.005f
-    const val NOISE_SIZE_RATIO = 0.12f
-    const val MIN_FACE_SIZE_RATIO = 0.20f
-    const val HOLD_SIZE_RATIO = 0.14f
+    const val NOISE_SIZE_RATIO = 0.06f
+    const val COLLECT_SIZE_RATIO = 0.08f
+    const val COMMIT_SIZE_RATIO = 0.12f
+    const val MIN_FACE_SIZE_RATIO = COLLECT_SIZE_RATIO
+    const val HOLD_SIZE_RATIO = 0.07f
     const val PRIMARY_AREA_RATIO = 0.7f
+    const val MIN_VISIBLE_RATIO = 0.55f
+
+    data class VisibleBox(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val visibleRatio: Float
+    ) {
+        val width: Int get() = right - left
+        val height: Int get() = bottom - top
+    }
+
+    fun clampVisible(
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        frameWidth: Int,
+        frameHeight: Int
+    ): VisibleBox {
+        val origW = (right - left).coerceAtLeast(0)
+        val origH = (bottom - top).coerceAtLeast(0)
+        val origArea = origW * origH
+        val cLeft = left.coerceIn(0, frameWidth)
+        val cTop = top.coerceIn(0, frameHeight)
+        val cRight = right.coerceIn(0, frameWidth)
+        val cBottom = bottom.coerceIn(0, frameHeight)
+        val visW = (cRight - cLeft).coerceAtLeast(0)
+        val visH = (cBottom - cTop).coerceAtLeast(0)
+        val ratio = if (origArea == 0) 0f else (visW * visH).toFloat() / origArea.toFloat()
+        return VisibleBox(cLeft, cTop, cRight, cBottom, ratio)
+    }
 
     fun evaluate(
         left: Int,
@@ -39,26 +74,30 @@ object FaceCaptureGate {
         previouslyReady: Boolean = false
     ): FaceCaptureStatus {
         if (frameWidth <= 0 || frameHeight <= 0) return FaceCaptureStatus.NONE
-        val width = right - left
-        val height = bottom - top
-        if (width <= 0 || height <= 0) return FaceCaptureStatus.NONE
+        val visible = clampVisible(left, top, right, bottom, frameWidth, frameHeight)
+        if (visible.width <= 0 || visible.height <= 0) return FaceCaptureStatus.NONE
 
-        val edgeMargin = if (previouslyReady) HOLD_EDGE_MARGIN_RATIO else EDGE_MARGIN_RATIO
         val minSize = if (previouslyReady) HOLD_SIZE_RATIO else MIN_FACE_SIZE_RATIO
+        val largeEnough = isFaceLargeEnough(
+            visible.width,
+            visible.height,
+            frameWidth,
+            frameHeight,
+            minSize
+        )
+        val noisy = isFaceLargeEnough(
+            visible.width,
+            visible.height,
+            frameWidth,
+            frameHeight,
+            NOISE_SIZE_RATIO
+        )
 
-        if (!isFaceFullyVisible(left, top, right, bottom, frameWidth, frameHeight, edgeMargin)) {
-            return if (isFaceLargeEnough(width, height, frameWidth, frameHeight, NOISE_SIZE_RATIO)) {
-                FaceCaptureStatus.CLIPPED
-            } else {
-                FaceCaptureStatus.NONE
-            }
+        if (visible.visibleRatio < MIN_VISIBLE_RATIO) {
+            return if (noisy) FaceCaptureStatus.CLIPPED else FaceCaptureStatus.NONE
         }
-        if (!isFaceLargeEnough(width, height, frameWidth, frameHeight, minSize)) {
-            return if (isFaceLargeEnough(width, height, frameWidth, frameHeight, NOISE_SIZE_RATIO)) {
-                FaceCaptureStatus.TOO_SMALL
-            } else {
-                FaceCaptureStatus.NONE
-            }
+        if (!largeEnough) {
+            return if (noisy) FaceCaptureStatus.TOO_SMALL else FaceCaptureStatus.NONE
         }
         return FaceCaptureStatus.READY
     }
@@ -72,11 +111,8 @@ object FaceCaptureGate {
         frameHeight: Int,
         edgeMarginRatio: Float = EDGE_MARGIN_RATIO
     ): Boolean {
-        val margin = min(frameWidth, frameHeight) * edgeMarginRatio
-        return left >= margin &&
-            top >= margin &&
-            right <= frameWidth - margin &&
-            bottom <= frameHeight - margin
+        val visible = clampVisible(left, top, right, bottom, frameWidth, frameHeight)
+        return visible.visibleRatio >= MIN_VISIBLE_RATIO
     }
 
     fun isFaceLargeEnough(
@@ -89,6 +125,13 @@ object FaceCaptureGate {
         val minSize = min(frameWidth, frameHeight) * minSizeRatio
         return faceWidth >= minSize && faceHeight >= minSize
     }
+
+    fun isCommitQuality(
+        faceWidth: Int,
+        faceHeight: Int,
+        frameWidth: Int,
+        frameHeight: Int
+    ): Boolean = isFaceLargeEnough(faceWidth, faceHeight, frameWidth, frameHeight, COMMIT_SIZE_RATIO)
 
     /**
      * Pessoa do totem: a cara mais próxima da câmera (maior área).

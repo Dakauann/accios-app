@@ -34,7 +34,8 @@ class FaceRecognitionService {
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+            .setContourMode(FaceDetectorOptions.CONTOUR_MODE_NONE)
             .setMinFaceSize(MIN_FACE_SIZE)
             .enableTracking()
             .build()
@@ -55,7 +56,7 @@ class FaceRecognitionService {
                     pitch = face.headEulerAngleX,
                     roll = face.headEulerAngleZ,
                     trackingId = face.trackingId,
-                    landmarks = extractLandmarks(face)
+                    landmarks = extractLandmarks(face) ?: syntheticLandmarks(boundingBox)
                 )
             }
         } catch (ex: Exception) {
@@ -82,14 +83,32 @@ class FaceRecognitionService {
 
     companion object {
         private const val TAG = "FaceRecognitionService"
-        private const val MIN_FACE_SIZE = 0.15f
-        private const val MAX_YAW_DEGREES = 18f
-        private const val MAX_PITCH_DEGREES = 25f
-        private const val MAX_ROLL_DEGREES = 18f
+        private const val MIN_FACE_SIZE = 0.08f
+        private const val MAX_YAW_DEGREES = 28f
+        private const val MAX_PITCH_DEGREES = 30f
+        private const val MAX_ROLL_DEGREES = 22f
         private const val ENABLE_DEBUG_LOGS = true
 
         init {
+            silenceNativeLogs()
+        }
+
+        fun silenceNativeLogs() {
             silenceMlKitLogs()
+        }
+
+        fun syntheticLandmarks(rect: android.graphics.Rect): FaceLandmarks {
+            val width = rect.width().toFloat().coerceAtLeast(1f)
+            val height = rect.height().toFloat().coerceAtLeast(1f)
+            val left = rect.left.toFloat()
+            val top = rect.top.toFloat()
+            return FaceLandmarks(
+                leftEye = PointF(left + width * 0.30f, top + height * 0.38f),
+                rightEye = PointF(left + width * 0.70f, top + height * 0.38f),
+                nose = PointF(left + width * 0.50f, top + height * 0.55f),
+                mouthLeft = PointF(left + width * 0.35f, top + height * 0.76f),
+                mouthRight = PointF(left + width * 0.65f, top + height * 0.76f)
+            )
         }
 
         private fun isFacingFront(yaw: Float, pitch: Float, roll: Float): Boolean {
@@ -139,9 +158,19 @@ class FaceRecognitionService {
                 val systemProps = Class.forName("android.os.SystemProperties")
                 val setMethod = systemProps.getDeclaredMethod("set", String::class.java, String::class.java)
                 setMethod.isAccessible = true
-                setMethod.invoke(null, "log.tag.FaceDetectorV2Jni", "ASSERT")
-                setMethod.invoke(null, "log.tag.ThickFaceDetector", "ASSERT")
-                setMethod.invoke(null, "log.tag.StreamingFormatChecker", "ASSERT")
+                val tags = arrayOf(
+                    "log.tag.FaceDetectorV2Jni",
+                    "log.tag.ThickFaceDetector",
+                    "log.tag.FaceDetector",
+                    "log.tag.NativeFaceDetector",
+                    "log.tag.VisionFace",
+                    "log.tag.StreamingFormatChecker"
+                )
+                for (tag in tags) {
+                    setMethod.invoke(null, tag, "SILENT")
+                    setMethod.invoke(null, tag, "S")
+                    System.setProperty(tag, "SILENT")
+                }
             }
         }
     }

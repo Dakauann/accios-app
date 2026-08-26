@@ -89,7 +89,14 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
         val modelBytes = loadModelBytes()
         val options = OrtSession.SessionOptions().apply {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            setIntraOpNumThreads(DEFAULT_THREADS)
+            val nnapi = runCatching { addNnapi() }
+            if (nnapi.isSuccess) {
+                Log.i(TAG, "ONNX execution provider=nnapi")
+                setIntraOpNumThreads(1)
+            } else {
+                Log.i(TAG, "ONNX execution provider=cpu (${nnapi.exceptionOrNull()?.message})")
+                setIntraOpNumThreads(CPU_THREADS)
+            }
         }
         val newSession = environment.createSession(modelBytes, options)
         val inputName = newSession.inputNames.firstOrNull()
@@ -179,7 +186,7 @@ class FaceEmbeddingModel(context: Context) : AutoCloseable {
         private const val TAG = "FaceEmbeddingModel"
         private const val INPUT_SIZE = 112
         private const val INPUT_CHANNELS = 3
-        private const val DEFAULT_THREADS = 4
+        private const val CPU_THREADS = 2
         private const val PIXEL_MEAN = 127.5f
         private const val PIXEL_STD = 128f
         private const val CUSTOM_MODEL_DIR = "encodings"

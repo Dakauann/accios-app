@@ -976,7 +976,7 @@ private fun FaceRecognitionView(
                         candidate = candidate,
                         isSubjectPresent = { viewModel.hasLivePrimaryFace() }
                     ) { success ->
-                        viewModel.onRecognitionProcessed(success)
+                        viewModel.onRecognitionProcessed(success, candidate.trackId)
                     }
                 },
                 onAmbientLuminance = { luminance ->

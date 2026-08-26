@@ -49,7 +49,7 @@ class FaceCaptureGateTest {
     }
 
     @Test
-    fun faceFlushWithTop_isClipped() {
+    fun faceFlushWithTop_isReadyToCollect() {
         val status = FaceCaptureGate.evaluate(
             left = FACE_LEFT,
             top = 0,
@@ -58,17 +58,29 @@ class FaceCaptureGateTest {
             frameWidth = FRAME_WIDTH,
             frameHeight = FRAME_HEIGHT
         )
-        assertEquals(FaceCaptureStatus.CLIPPED, status)
+        assertEquals(FaceCaptureStatus.READY, status)
     }
 
     @Test
-    fun faceFlushWithRightEdge_isClipped() {
-        val left = FRAME_WIDTH - FACE_WIDTH
+    fun faceAboveFrame_walkUpStillReady() {
         val status = FaceCaptureGate.evaluate(
-            left = left,
-            top = 400,
-            right = FRAME_WIDTH,
-            bottom = 400 + FACE_HEIGHT,
+            left = 200,
+            top = -40,
+            right = 360,
+            bottom = 160,
+            frameWidth = FRAME_WIDTH,
+            frameHeight = FRAME_HEIGHT
+        )
+        assertEquals(FaceCaptureStatus.READY, status)
+    }
+
+    @Test
+    fun mostlyOffScreen_isClipped() {
+        val status = FaceCaptureGate.evaluate(
+            left = FACE_LEFT,
+            top = -180,
+            right = FACE_LEFT + FACE_WIDTH,
+            bottom = 80,
             frameWidth = FRAME_WIDTH,
             frameHeight = FRAME_HEIGHT
         )
@@ -76,9 +88,9 @@ class FaceCaptureGateTest {
     }
 
     @Test
-    fun distantPasserbyFace_isIgnored() {
-        val width = 80
-        val height = 90
+    fun farNoiseFace_isIgnored() {
+        val width = 40
+        val height = 45
         val left = (FRAME_WIDTH - width) / 2
         val top = (FRAME_HEIGHT - height) / 2
         val status = FaceCaptureGate.evaluate(
@@ -93,7 +105,7 @@ class FaceCaptureGateTest {
     }
 
     @Test
-    fun approachingFace_isTooSmallNotReady() {
+    fun approachingFace_isReadyToCollect() {
         val width = 140
         val height = 150
         val left = (FRAME_WIDTH - width) / 2
@@ -106,13 +118,36 @@ class FaceCaptureGateTest {
             frameWidth = FRAME_WIDTH,
             frameHeight = FRAME_HEIGHT
         )
-        assertEquals(FaceCaptureStatus.TOO_SMALL, status)
+        assertEquals(FaceCaptureStatus.READY, status)
+        assertTrue(
+            FaceCaptureGate.isCommitQuality(width, height, FRAME_WIDTH, FRAME_HEIGHT)
+        )
+    }
+
+    @Test
+    fun walkUpFace_collectsBeforeCommitSize() {
+        val width = 70
+        val height = 72
+        assertEquals(
+            FaceCaptureStatus.READY,
+            FaceCaptureGate.evaluate(
+                left = 200,
+                top = 200,
+                right = 200 + width,
+                bottom = 200 + height,
+                frameWidth = FRAME_WIDTH,
+                frameHeight = FRAME_HEIGHT
+            )
+        )
+        assertFalse(
+            FaceCaptureGate.isCommitQuality(width, height, FRAME_WIDTH, FRAME_HEIGHT)
+        )
     }
 
     @Test
     fun sizeHysteresis_keepsReadyWhenBoxShrinksSlightly() {
-        val width = 115
-        val height = 125
+        val width = 55
+        val height = 58
         val left = (FRAME_WIDTH - width) / 2
         val top = (FRAME_HEIGHT - height) / 2
         assertEquals(
@@ -138,8 +173,8 @@ class FaceCaptureGateTest {
         val status = FaceCaptureGate.evaluate(
             left = 0,
             top = 40,
-            right = 70,
-            bottom = 120,
+            right = 30,
+            bottom = 75,
             frameWidth = FRAME_WIDTH,
             frameHeight = FRAME_HEIGHT
         )
@@ -205,11 +240,17 @@ class FaceCaptureGateTest {
         )
         assertFalse(
             FaceCaptureGate.isFaceLargeEnough(
-                faceWidth = 80,
-                faceHeight = 90,
+                faceWidth = 40,
+                faceHeight = 45,
                 frameWidth = FRAME_WIDTH,
                 frameHeight = FRAME_HEIGHT
             )
+        )
+        assertFalse(
+            FaceCaptureGate.isCommitQuality(70, 72, FRAME_WIDTH, FRAME_HEIGHT)
+        )
+        assertTrue(
+            FaceCaptureGate.isCommitQuality(140, 150, FRAME_WIDTH, FRAME_HEIGHT)
         )
     }
 

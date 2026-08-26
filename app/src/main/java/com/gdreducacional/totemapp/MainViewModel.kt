@@ -323,7 +323,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "frame0=${candidate.frames.firstOrNull()?.let { "${it.width}x${it.height}" }}"
         )
 
-        markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
+        if (candidate.commitQuality) {
+            markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             val result = try {
@@ -346,13 +348,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     registerRecognitionSuccess(result.personId, result.displayName, result.entityType, result.confidence.toDouble())
                     onFinished(true)
-                } else if (isSubjectPresent()) {
-                    Log.i(TAG, "Recognition FAILED (não reconhecido) trackId=${candidate.trackId}")
+                } else if (candidate.forceAnnounce && isSubjectPresent()) {
+                    Log.i(TAG, "Recognition COMMIT MISS trackId=${candidate.trackId}")
                     onRecognitionFailed("Não reconhecido")
                     onFinished(false)
-                } else {
-                    Log.i(TAG, "Recognition FAILED sem rosto na câmera; ignorando overlay trackId=${candidate.trackId}")
+                } else if (!isSubjectPresent()) {
+                    Log.i(TAG, "Recognition MISS sem rosto; idle trackId=${candidate.trackId}")
                     applyRecognitionIdleState()
+                    onFinished(false)
+                } else {
+                    Log.i(
+                        TAG,
+                        "Recognition silent miss trackId=${candidate.trackId} " +
+                            "commit=${candidate.commitQuality} score=${"%.3f".format(candidate.qualityScore)}"
+                    )
                     onFinished(false)
                 }
             }
