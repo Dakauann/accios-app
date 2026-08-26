@@ -95,6 +95,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val meta = encodingRepository.loadFromDisk()
             if (meta != null) {
+                // Força calibração + logs de threshold no boot
+                val thrDiag = encodingRepository.getThresholdDiagnostics()
+                Log.i(TAG, "Base local carregada: people=${meta.peopleCount} dim=${meta.embeddingDimension} $thrDiag")
                 _uiState.update { state ->
                     state.copy(
                         baseLoaded = encodingRepository.isReady(),
@@ -104,6 +107,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ?: state.lastBaseSyncEpochSeconds
                     )
                 }
+            } else {
+                Log.w(TAG, "Nenhuma base local de encodings encontrada em disco")
             }
         }
 
@@ -290,15 +295,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun submitRecognitionCandidate(candidate: RecognitionCandidate, onFinished: (Boolean) -> Unit) {
         if (candidate.frames.isEmpty()) {
+            Log.w(TAG, "submitRecognition: frames vazio trackId=${candidate.trackId}")
             onRecognitionError("Falha ao processar imagem", onFinished)
             return
         }
 
         if (!encodingRepository.isReady()) {
+            Log.w(
+                TAG,
+                "submitRecognition: base indisponível people=${encodingRepository.getPeopleCount()} " +
+                    "modelReady=${embeddingModel.isReady()}"
+            )
             candidate.frames.forEach { it.recycleSafely() }
             onRecognitionError("Base local indisponível", onFinished)
             return
         }
+
+        Log.i(
+            TAG,
+            "submitRecognition: trackId=${candidate.trackId} frames=${candidate.frames.size} " +
+                "people=${encodingRepository.getPeopleCount()} " +
+                "modelReady=${embeddingModel.isReady()} " +
+                "frame0=${candidate.frames.firstOrNull()?.let { "${it.width}x${it.height}" }}"
+        )
 
         markRecognitionStatus(RecognitionStatus.Detecting, "Verificando identidade...")
 
@@ -316,9 +335,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.Main) {
                 if (result != null) {
+                    Log.i(
+                        TAG,
+                        "Recognition SUCCESS id=${result.personId} name=${result.displayName} " +
+                            "conf=${"%.4f".format(result.confidence)} dist=${"%.4f".format(result.distance)}"
+                    )
                     registerRecognitionSuccess(result.personId, result.displayName, result.entityType, result.confidence.toDouble())
                     onFinished(true)
                 } else {
+                    Log.i(TAG, "Recognition FAILED (não reconhecido) trackId=${candidate.trackId}")
                     onRecognitionFailed("Não reconhecido")
                     onFinished(false)
                 }
@@ -530,9 +555,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val timestamp = System.currentTimeMillis() / 1000L
                 val syncResult = encodingRepository.applySyncDataset(payload, timestamp)
                 if (!syncResult.success) {
-                    Log.w(TAG, "Falha ao aplicar base sincronizada")
+                    Log.w(TAG, "Falha ao aplicar base sincronizada payloadLen=${payload.length}")
                     return@withLock
                 }
+
+                val thrDiag = encodingRepository.getThresholdDiagnostics()
+                Log.i(
+                    TAG,
+                    "Base sincronizada OK: people=${syncResult.peopleCount} " +
+                        "dim=${syncResult.embeddingDimension} payloadLen=${payload.length} $thrDiag"
+                )
 
                 withContext(Dispatchers.Main) {
                     _uiState.update {
