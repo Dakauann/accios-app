@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Accios"
+rootProject.name = "GDREdu App Totem"
 include(":app")
