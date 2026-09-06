@@ -38,6 +38,7 @@ class CameraView : ViewModel() {
     private var faceService: FaceRecognitionService? = null
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var recognitionCallback: ((RecognitionCandidate) -> Unit)? = null
+    private var canAttemptRecognition: () -> Boolean = { true }
     private var luminanceCallback: ((Float) -> Unit)? = null
     private val recognitionInFlight = AtomicBoolean(false)
     private val faceTrackStates = mutableMapOf<Int, FaceTrackState>()
@@ -58,11 +59,13 @@ class CameraView : ViewModel() {
         onFacesDetected: (List<FaceDetectionResult>) -> Unit = {},
         onCaptureStatus: (FaceCaptureStatus) -> Unit = {},
         onRecognitionCandidate: (RecognitionCandidate) -> Unit = {},
-        onAmbientLuminance: (Float) -> Unit = {}
+        onAmbientLuminance: (Float) -> Unit = {},
+        canAttemptRecognition: () -> Boolean = { true }
     ) {
         appContext = context.applicationContext
         faceService = FaceRecognitionService()
         recognitionCallback = onRecognitionCandidate
+        this.canAttemptRecognition = canAttemptRecognition
         luminanceCallback = onAmbientLuminance
         lastLuminanceNotified = null
         lastExposureIndex = null
@@ -211,6 +214,7 @@ class CameraView : ViewModel() {
         frameWidth: Int,
         frameHeight: Int
     ) {
+        if (!canAttemptRecognition()) return
         val callback = recognitionCallback ?: return
         if (!detection.isFrontFacing) {
             logGate("no_front", detection.rect, frameWidth, frameHeight)

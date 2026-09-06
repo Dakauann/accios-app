@@ -971,6 +971,10 @@ private fun FaceRecognitionView(
                 previewView = previewView,
                 context = context,
                 onCaptureStatus = { status -> captureStatus = status },
+                onFacesDetected = { faces ->
+                    mainViewModel.observeRecognitionFaces(faces.map { it.trackingId ?: -1 }.toSet())
+                },
+                canAttemptRecognition = mainViewModel::canAttemptRecognition,
                 onRecognitionCandidate = { candidate ->
                     mainViewModel.submitRecognitionCandidate(
                         candidate = candidate,
@@ -986,12 +990,14 @@ private fun FaceRecognitionView(
         } else {
             captureStatus = FaceCaptureStatus.NONE
             mainViewModel.updateAmbientLuminance(LOW_LIGHT_RESET_VALUE)
+            mainViewModel.observeRecognitionFaces(emptySet())
             viewModel.unbindCamera(context)
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            mainViewModel.observeRecognitionFaces(emptySet())
             viewModel.unbindCamera(context)
         }
     }

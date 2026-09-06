@@ -1,6 +1,7 @@
 package com.gdreducacional.totemapp
 
 import android.app.Application
+import android.os.SystemClock
 import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -19,6 +20,7 @@ import com.gdreducacional.totemapp.services.PairingService
 import com.gdreducacional.totemapp.services.FaceEmbeddingModel
 import com.gdreducacional.totemapp.services.ModelProvider
 import com.gdreducacional.totemapp.services.RecognitionEngine
+import com.gdreducacional.totemapp.views.RecognitionRejectionGate
 import com.gdreducacional.totemapp.views.RecognitionCandidate
 import com.gdreducacional.totemapp.storage.RecognitionLogEntry
 import com.gdreducacional.totemapp.storage.RecognitionLogStore
@@ -62,7 +64,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var apiService: ApiService? = null
     private var heartbeatJob: Job? = null
     private var logSyncJob: Job? = null
+    private val rejectionGate = RecognitionRejectionGate()
     private var recognitionResetJob: Job? = null
+
+    fun observeRecognitionFaces(trackIds: Set<Int>) {
+        rejectionGate.observe(trackIds, SystemClock.elapsedRealtime())
+    }
+
+    fun canAttemptRecognition(): Boolean =
+        !rejectionGate.isBlocked(SystemClock.elapsedRealtime())
     private var modelInitJob: Job? = null
     private val heartbeatIntervalMillis = 60_000L
     private val logSyncIntervalMillis = 20_000L
@@ -298,6 +308,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isSubjectPresent: () -> Boolean = { true },
         onFinished: (Boolean) -> Unit
     ) {
+        if (!canAttemptRecognition()) {
+            candidate.frames.forEach { it.recycleSafely() }
+            onFinished(false)
+            return
+        }
+        recognitionResetJob?.cancel()
+        recognitionResetJob = null
         if (candidate.frames.isEmpty()) {
             Log.w(TAG, "submitRecognition: frames vazio trackId=${candidate.trackId}")
             onRecognitionError("Falha ao processar imagem", onFinished)
@@ -350,6 +367,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     onFinished(true)
                 } else if (candidate.forceAnnounce && isSubjectPresent()) {
                     Log.i(TAG, "Recognition COMMIT MISS trackId=${candidate.trackId}")
+                    rejectionGate.reject(candidate.trackId, SystemClock.elapsedRealtime())
                     onRecognitionFailed("Não reconhecido")
                     onFinished(false)
                 } else if (!isSubjectPresent()) {
@@ -369,6 +387,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetRecognitionState() {
+        if (!canAttemptRecognition()) return
         recognitionResetJob?.cancel()
         recognitionResetJob = null
         applyRecognitionIdleState()
@@ -450,6 +469,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         recognitionResetJob?.cancel()
         recognitionResetJob = viewModelScope.launch {
             delay(RECOGNITION_RESET_DELAY_MILLIS)
+            while (!canAttemptRecognition()) delay(100L)
             applyRecognitionIdleState()
             recognitionResetJob = null
         }
