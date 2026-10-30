@@ -24,6 +24,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
@@ -48,12 +49,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -74,9 +77,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.semantics.Role
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.gdreducacional.totemapp.storage.RecognitionLogEntry
+import com.gdreducacional.totemapp.pickup.OperationMode
+import com.gdreducacional.totemapp.pickup.PickupPanel
 import com.gdreducacional.totemapp.ui.theme.AcciosTheme
 import com.gdreducacional.totemapp.ui.theme.AcciosColors
 import com.gdreducacional.totemapp.views.CameraView
@@ -162,6 +168,7 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
             onDismiss = { mainViewModel.setSettingsVisible(false) },
             onRefreshLogs = { mainViewModel.refreshRecentLogs() },
             onUnpair = { mainViewModel.unpair() },
+            onModeChange = mainViewModel::setOperationMode,
             background = liquidBackground
         )
     }
@@ -219,7 +226,7 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
 
             if (!state.scannerEnabled && permissionState.status.isGranted && state.modelStatus == ModelStatus.Ready) {
                 Text(
-                    text = "GDREdu",
+                    text = if (state.operationMode == OperationMode.PICKUP) "Portaria" else "GDREdu",
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(start = 24.dp, top = 32.dp),
@@ -233,14 +240,46 @@ fun SmartPresenceScreen(mainViewModel: MainViewModel) {
                         .padding(top = 88.dp)
                 )
 
-                RecognitionGlass(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 48.dp),
-                    state = state
+                if (state.operationMode == OperationMode.STANDARD) {
+                    RecognitionGlass(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 48.dp),
+                        state = state
+                    )
+                } else if (state.pickupMatch == null) {
+                    Text(
+                        text = when {
+                            state.pickupAwaiting -> "Confirmação pendente. Aguarde a resposta do servidor."
+                            state.pickupStatus != null -> state.pickupStatus
+                            state.recognitionMessage != null -> state.recognitionMessage
+                            else -> "Aproxime o rosto para identificar o responsável."
+                        } ?: "",
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp, vertical = 48.dp)
+                            .background(AcciosColors.surfaceDeep, RoundedCornerShape(12.dp)).padding(18.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AcciosColors.textPrimary
+                    )
+                }
+            }
+            state.pickupMatch?.let { match ->
+                PickupPanel(
+                    match = match,
+                    busy = state.pickupBusy,
+                    onToggle = mainViewModel::togglePickupStudent,
+                    onConfirm = mainViewModel::confirmPickup,
+                    onCancel = mainViewModel::cancelPickupMatch
                 )
             }
         }
+    }
+    state.pickupMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = mainViewModel::dismissPickupMessage,
+            title = { Text("Portaria") },
+            text = { Text(message) },
+            confirmButton = { Button(onClick = mainViewModel::dismissPickupMessage) { Text("Entendi") } }
+        )
     }
 }
 
@@ -401,6 +440,7 @@ private fun SettingsScreen(
     onDismiss: () -> Unit,
     onRefreshLogs: () -> Unit,
     onUnpair: () -> Unit,
+    onModeChange: (OperationMode) -> Unit,
     background: Brush
 ) {
     val logsState = rememberLazyListState()
@@ -463,6 +503,33 @@ private fun SettingsScreen(
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
                     item {
+                        Text("Modo de operação", style = MaterialTheme.typography.titleMedium, color = AcciosColors.textPrimary)
+                        OperationMode.entries.forEach { mode ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().selectable(
+                                    selected = state.operationMode == mode,
+                                    role = Role.RadioButton,
+                                    onClick = { onModeChange(mode) }
+                                ).padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = state.operationMode == mode, onClick = null)
+                                Text(
+                                    if (mode == OperationMode.PICKUP) "Portaria" else "Padrão",
+                                    color = AcciosColors.textPrimary,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
+                        if (state.pickupPending > 0 || state.pickupRejected > 0) {
+                            Text(
+                                "Retiradas pendentes: ${state.pickupPending}. Precisam de atenção: ${state.pickupRejected}.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = AcciosColors.textPrimary
+                            )
+                        }
+                    }
+                    item {
                         Text(
                             text = "Informações",
                             style = MaterialTheme.typography.titleMedium,
@@ -471,6 +538,22 @@ private fun SettingsScreen(
                         )
                     }
                     item { SettingsInfoSection(state) }
+                    if (state.pickupRejectedEvents.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Retiradas não aceitas. Procure a equipe da escola e informe o identificador.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = AcciosColors.textPrimary
+                            )
+                        }
+                        items(state.pickupRejectedEvents, key = { it.id }) { event ->
+                            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                Text(event.studentName, style = MaterialTheme.typography.titleSmall, color = AcciosColors.textPrimary)
+                                Text(event.reason, style = MaterialTheme.typography.bodySmall, color = AcciosColors.textPrimary)
+                                Text(event.id, style = MaterialTheme.typography.bodySmall, color = AcciosColors.textTertiary)
+                            }
+                        }
+                    }
                 }
 
                 Column(
@@ -478,10 +561,9 @@ private fun SettingsScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
                             text = "Últimos registros",
@@ -971,9 +1053,6 @@ private fun FaceRecognitionView(
                 previewView = previewView,
                 context = context,
                 onCaptureStatus = { status -> captureStatus = status },
-                onFacesDetected = { faces ->
-                    mainViewModel.observeRecognitionFaces(faces.map { it.trackingId ?: -1 }.toSet())
-                },
                 canAttemptRecognition = mainViewModel::canAttemptRecognition,
                 onRecognitionCandidate = { candidate ->
                     mainViewModel.submitRecognitionCandidate(
@@ -990,14 +1069,12 @@ private fun FaceRecognitionView(
         } else {
             captureStatus = FaceCaptureStatus.NONE
             mainViewModel.updateAmbientLuminance(LOW_LIGHT_RESET_VALUE)
-            mainViewModel.observeRecognitionFaces(emptySet())
             viewModel.unbindCamera(context)
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            mainViewModel.observeRecognitionFaces(emptySet())
             viewModel.unbindCamera(context)
         }
     }

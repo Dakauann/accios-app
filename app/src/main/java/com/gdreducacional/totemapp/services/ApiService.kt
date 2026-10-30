@@ -31,6 +31,9 @@ class ApiService(
         .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
         .writeTimeout(timeoutSeconds, TimeUnit.SECONDS)
         .build()
+    private val pickupSyncClient: OkHttpClient = client.newBuilder()
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -80,7 +83,7 @@ class ApiService(
     }
 
     @Throws(NetworkException::class)
-    fun postEncrypted(endpoint: String, payload: Any? = null): ApiResult {
+    fun postEncrypted(endpoint: String, payload: Any? = null, longTimeout: Boolean = false): ApiResult {
         ensurePaired()
         val encrypted = cryptoManager.encrypt(payload ?: emptyMap<String, Any>())
         val body = JSONObject().put("ENC", encrypted).toString().toRequestBody(jsonMediaType)
@@ -89,7 +92,7 @@ class ApiService(
             .post(body)
             .applyJsonHeaders(token)
             .build()
-        return executeEncrypted(request)
+        return executeEncrypted(request, longTimeout)
     }
 
     @Throws(NetworkException::class)
@@ -146,23 +149,40 @@ class ApiService(
         return postEncrypted("/api/equipment/sync/base", payload)
     }
 
+    @Throws(NetworkException::class)
+    fun syncPickupDataset(): ApiResult {
+        val payload = JSONObject().put("type", "pickup_sync")
+        return postEncrypted("/api/equipment/sync/pickup", payload, longTimeout = true)
+    }
+
+    @Throws(NetworkException::class)
+    fun acknowledgePickupDataset(snapshotId: String): ApiResult {
+        return postEncrypted("/api/equipment/sync/pickup/applied", JSONObject().put("snapshotId", snapshotId))
+    }
+
+    @Throws(NetworkException::class)
+    fun sendPickupEvents(events: List<JSONObject>): ApiResult {
+        val payload = JSONObject().put("events", JSONArray(events))
+        return postEncrypted("/api/equipment/pickup/events", payload)
+    }
+
     private fun ensurePaired() {
         if (!cryptoManager.isPaired()) {
             throw NetworkException("Device is not paired. Run pairing first.")
         }
     }
 
-    private fun execute(request: Request): Response {
+    private fun execute(request: Request, longTimeout: Boolean = false): Response {
         try {
-            return client.newCall(request).execute()
+            return (if (longTimeout) pickupSyncClient else client).newCall(request).execute()
         } catch (ex: IOException) {
             Log.e(TAG, "Network error calling ${request.url}: ${ex.message}")
             throw NetworkException("Network error: ${ex.message}", ex)
         }
     }
 
-    private fun executeEncrypted(request: Request): ApiResult {
-        execute(request).use { response ->
+    private fun executeEncrypted(request: Request, longTimeout: Boolean = false): ApiResult {
+        execute(request, longTimeout).use { response ->
             val body = response.body
             val contentType = body?.contentType()?.toString()
             val rawBytes = body?.bytes()

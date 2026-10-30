@@ -56,7 +56,6 @@ class CameraView : ViewModel() {
         lifecycleOwner: LifecycleOwner,
         previewView: androidx.camera.view.PreviewView,
         context: Context,
-        onFacesDetected: (List<FaceDetectionResult>) -> Unit = {},
         onCaptureStatus: (FaceCaptureStatus) -> Unit = {},
         onRecognitionCandidate: (RecognitionCandidate) -> Unit = {},
         onAmbientLuminance: (Float) -> Unit = {},
@@ -102,7 +101,6 @@ class CameraView : ViewModel() {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
                         processImageProxy(
                             imageProxy,
-                            onFacesDetected,
                             { status -> mainExecutor.execute { onCaptureStatus(status) } }
                         )
                     }
@@ -126,7 +124,6 @@ class CameraView : ViewModel() {
 
     private fun processImageProxy(
         imageProxy: ImageProxy,
-        onFacesDetected: (List<FaceDetectionResult>) -> Unit,
         onCaptureStatus: (FaceCaptureStatus) -> Unit
     ) {
         val service = faceService
@@ -155,7 +152,6 @@ class CameraView : ViewModel() {
         detectedFaces.clear()
         if (overlays.isEmpty()) {
             clearTrackStates()
-            onFacesDetected(emptyList())
         } else {
             detectedFaces.addAll(
                 overlays.map { result ->
@@ -165,7 +161,6 @@ class CameraView : ViewModel() {
                     )
                 }
             )
-            onFacesDetected(overlays)
         }
 
         updateFaceTrackStates(overlays)

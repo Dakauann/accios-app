@@ -7,7 +7,8 @@ import kotlin.math.sqrt
 
 class RecognitionEngine(
     private val embeddingModel: FaceEmbeddingModel,
-    private val encodingRepository: EncodingRepository
+    private val encodingRepository: EncodingRepository,
+    private val privateMode: Boolean = false
 ) {
 
     data class RecognitionResult(
@@ -70,7 +71,9 @@ class RecognitionEngine(
         val accepted = distanceL2 <= thresholdL2 && margin >= MIN_MATCH_MARGIN_L2
         val totalMs = (System.nanoTime() - t0) / 1_000_000L
 
-        Log.i(
+        if (privateMode) {
+            Log.i(TAG, "Reconhecimento da portaria: ${if (accepted) "correspondência" else "sem correspondência"}")
+        } else Log.i(
             TAG,
             "RECOG_${if (accepted) "HIT" else "MISS"} " +
                 "trackId=${batch.trackId} frames=${batch.frames.size} " +
@@ -89,7 +92,7 @@ class RecognitionEngine(
 
         if (!accepted) {
             // Segundo colocado ajuda a ver se o modelo está "quase" ou completamente perdido
-            if (topK.size >= 2) {
+            if (!privateMode && topK.size >= 2) {
                 val second = topK[1]
                 Log.i(
                     TAG,

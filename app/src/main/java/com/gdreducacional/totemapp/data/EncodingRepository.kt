@@ -67,7 +67,11 @@ class EncodingRepository(context: Context) {
     DatasetMeta(loaded.ids.size, loaded.dimension, getLastSyncEpochSeconds())
     }
 
-    suspend fun applySyncDataset(payload: String, timestampSeconds: Long): SyncResult = withContext(Dispatchers.IO) {
+    suspend fun applySyncDataset(
+        payload: String,
+        timestampSeconds: Long,
+        persist: Boolean = true
+    ): SyncResult = withContext(Dispatchers.IO) {
         if (payload.isBlank()) {
             Log.w(TAG, "Sync payload vazio")
             return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
@@ -91,18 +95,18 @@ class EncodingRepository(context: Context) {
         }
 
         val dimension = parsed.optInt("embeddingDimension", inferDimension(datasetArray))
-        if (dimension <= 0) {
+        if (datasetArray.length() > 0 && dimension <= 0) {
             Log.w(TAG, "Dimensão de embedding inválida ($dimension)")
             return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
         }
 
         val (embeddings, ids, roster) = buildDatasetLists(datasetArray, dimension)
-        if (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size) {
+        if (datasetArray.length() > 0 && (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size)) {
             Log.w(TAG, "Dataset inválido após parsing: embeddings=${embeddings.size}, ids=${ids.size}")
             return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
         }
 
-        if (!encodingsDir.exists() && !encodingsDir.mkdirs()) {
+        if (persist && !encodingsDir.exists() && !encodingsDir.mkdirs()) {
             Log.e(TAG, "Não foi possível criar diretório ${encodingsDir.absolutePath}")
             return@withContext SyncResult(false, datasetRef.ids.size, datasetRef.dimension, getLastSyncEpochSeconds())
         }
@@ -124,13 +128,15 @@ class EncodingRepository(context: Context) {
             put("lastSyncEpochSeconds", timestampSeconds)
         }
 
-        runCatching { datasetFile.writeText(persistable.toString()) }
-            .onFailure { Log.e(TAG, "Falha ao persistir dataset local: ${it.message}") }
+        if (persist) {
+            runCatching { datasetFile.writeText(persistable.toString()) }
+                .onFailure { Log.e(TAG, "Falha ao persistir dataset local: ${it.message}") }
+        }
 
         val generation = datasetGeneration.incrementAndGet()
         datasetRef = Dataset(embeddings, ids, roster, dimension, generation)
         thresholdCache = null
-        setLastSyncEpochSeconds(timestampSeconds)
+        if (persist) setLastSyncEpochSeconds(timestampSeconds)
         SyncResult(true, ids.size, dimension, timestampSeconds)
     }
 
@@ -144,6 +150,12 @@ class EncodingRepository(context: Context) {
     fun getEmbeddingDimension(): Int = datasetRef.dimension
 
     fun getPeopleCount(): Int = datasetRef.ids.size
+
+    /** Return a copy so callers cannot mutate the shared recognition roster. */
+    fun getPersonInfo(personId: String): PersonInfo? {
+        val info = datasetRef.roster[personId] ?: return null
+        return info.copy(extra = info.extra?.let { JSONObject(it.toString()) })
+    }
 
     fun findNearest(embedding: FloatArray): MatchCandidate? {
         return findTopK(embedding, k = 1).firstOrNull()
@@ -252,7 +264,7 @@ class EncodingRepository(context: Context) {
             val datasetArray = json.optJSONArray("dataset") ?: JSONArray()
             val dimension = json.optInt("embeddingDimension", inferDimension(datasetArray))
             val (embeddings, ids, roster) = buildDatasetLists(datasetArray, dimension)
-            if (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size) {
+            if (datasetArray.length() > 0 && (embeddings.isEmpty() || ids.isEmpty() || embeddings.size != ids.size)) {
                 Log.e(TAG, "Dataset persistido inválido: embeddings=${embeddings.size}, ids=${ids.size}")
                 return null
             }
